@@ -1,15 +1,21 @@
+type elt = | Val of float | Infinity
+  [@@deriving yojson]
+
+type sign =
+    Pos | Neg
+
+type ineq =
+    LEq | GEq
+
 module type S =
 sig
   include Lattice.S
-  type elt
-  type sign
-  type ineq
   val of_array : float array array -> t
   val set_constraint : t -> (sign * int) option * sign * int * ineq * elt -> int -> unit
-  val set_equality : t -> int -> elt -> int -> unit
-  val elt_of_float : float -> elt
+  val set_equality : t -> int -> elt * elt -> int -> unit
+  val projection : t -> int -> elt * elt
 end
-
+(* with type elt = element *)
 
 module ArrayOctagon : S =
 struct
@@ -17,23 +23,10 @@ struct
   include Lattice.StdCousot
   include Printable.Blank
 
-  type elt =
-    | Val of float
-    | Infinity [@name "Inf"]
-  [@@deriving yojson]
-
-  let elt_of_float x = Val x
-
   type t =
     | Matrix of elt array array
     | Top
     | Bot [@@deriving to_yojson]
-
-  type sign =
-      Pos | Neg
-
-  type ineq =
-      LEq | GEq
 
   let of_array matrix =
     Matrix (Array.map (fun arr -> Array.map (fun elt -> Val elt) arr) matrix)
@@ -120,52 +113,6 @@ struct
           inner1 inner2)
       oct1 oct2
 
-  let min a b =
-    match a, b with
-    | Infinity , _ -> b
-    | _ , Infinity -> a
-    | Val a, Val b -> Val (min a b)
-
-  let max a b =
-    match a, b with
-    | Infinity , _ -> a
-    | _ , Infinity -> b
-    | Val a, Val b -> Val (max a b)
-
-  let join oct1 oct2 =
-    match oct1, oct2 with
-    | Bot, other | other, Bot -> other
-    | Top, _ | _, Top -> Top
-    | Matrix oct1, Matrix oct2 -> Matrix (oct_map2 max oct1 oct2)
-
-  let meet oct1 oct2 =
-    match oct1, oct2 with
-    | Bot, _ | _, Bot -> Bot
-    | Top, other | other, Top -> other
-    | Matrix oct1, Matrix oct2 -> Matrix (oct_map2 min oct1 oct2)
-
-  let widen oct1 oct2 =
-    match oct1, oct2 with
-    (* TODO: is this case correct? *)
-    | Bot, other | other, Bot -> other
-    | Top, _ | _, Top -> Top
-    | Matrix oct1, Matrix oct2 ->
-      Matrix (oct_map2 (fun a b -> if elt_leq b a then a else Infinity) oct1 oct2)
-
-
-  let bot () = Bot
-
-  let is_bot = function
-      Bot -> true
-    | _ -> false
-
-
-  let top () = Top
-
-  let is_top = function
-      Top -> true
-    | _ -> false
-
   let inverse_index i = i lxor 1
 
   let min_elt ls =
@@ -176,11 +123,6 @@ struct
       | [] -> min
     in
     min_elt Infinity ls
-
-  let print_octagon oct =
-    Array.iter (fun a -> Array.iter (fun el -> (match el with
-        | Infinity -> print_string "Inf"
-        | Val el -> print_float el) ; print_string "\t") a; print_newline ()) oct
 
   let strong_closure oct =
     (* S+ matrix of the octagon paper *)
@@ -218,6 +160,62 @@ struct
     in
     strong_closure' oct 1
 
+  let min a b =
+    match a, b with
+    | Infinity , _ -> b
+    | _ , Infinity -> a
+    | Val a, Val b -> Val (min a b)
+
+  let max a b =
+    match a, b with
+    | Infinity , _ -> a
+    | _ , Infinity -> b
+    | Val a, Val b -> Val (max a b)
+
+  let join oct1 oct2 =
+    match oct1, oct2 with
+    | Bot, other | other, Bot -> other
+    | Top, _ | _, Top -> Top
+    | Matrix oct1, Matrix oct2 ->
+      let oct1, oct2 = strong_closure oct1, strong_closure oct2 in
+      Matrix (oct_map2 max oct1 oct2)
+
+  let meet oct1 oct2 =
+    match oct1, oct2 with
+    | Bot, _ | _, Bot -> Bot
+    | Top, other | other, Top -> other
+    | Matrix oct1, Matrix oct2 -> Matrix (oct_map2 min oct1 oct2)
+
+  let widen oct1 oct2 =
+    match oct1, oct2 with
+    (* TODO: is this case correct? *)
+    | Bot, other | other, Bot -> other
+    | Top, _ | _, Top -> Top
+    | Matrix oct1, Matrix oct2 ->
+      Matrix (oct_map2 (fun a b -> if elt_leq b a then a else Infinity) oct1 oct2)
+
+
+  let bot () = Bot
+
+  let is_bot = function
+      Bot -> true
+    | _ -> false
+
+
+  let top () = Top
+
+  let is_top = function
+      Top -> true
+    | _ -> false
+
+
+
+  let print_octagon oct =
+    Array.iter (fun a -> Array.iter (fun el -> (match el with
+        | Infinity -> print_string "Inf"
+        | Val el -> print_float el) ; print_string "\t") a; print_newline ()) oct
+
+
   let top_of_size size =
     Matrix (Array.init (size * 2)
               (fun _ -> Array.init (size * 2)
@@ -230,59 +228,63 @@ struct
       | other -> other
     in
 
-    let set arr i j c = Array.set (Array.get arr i) j c in
+    let set arr i j c =
+      let do_change =
+        (match Array.get (Array.get arr i) j with
+         | Infinity -> true
+         | Val old -> old > c)
+      in if do_change then
+          Array.set (Array.get arr i) j (Val c)
+      else () in
 
-    match const with
-    (* sums are always leq *)
-    | Some (sign1, v1), sign2, v2, _, c ->
-      (let i = v1 * 2 in
-       let j = v2 * 2 in
-       let i1, j1, i2, j2 =
-         (match sign1, sign2 with
-          | Pos, Neg -> i, j, inverse_index j, inverse_index i
-          | Neg, Pos -> j, i, inverse_index i, inverse_index j
-          | Pos, Pos -> i, inverse_index j, j, inverse_index i
-          | Neg, Neg -> inverse_index j, i, inverse_index i, j)
-       in
-       match oct with
-       | Matrix m -> set m i1 j1 c; set m i2 j2 c
-       | _ -> ())
-    | None, sign, v, ineq, c ->
-      let i = v * 2 in
-      match oct with
-      | Matrix m ->
-        if (ineq == LEq) <> (sign == Pos)
-        then set m i (inverse_index i) c
-        else set m (inverse_index i) i c
-      (* match ineq with *)
-      (* | LEq -> *)
-      (* | GEq -> *)
+      match const with
+      (* sums are always leq *)
+      | Some (sign1, v1), sign2, v2, _, Val c ->
+        (let i = v1 * 2 in
+         let j = v2 * 2 in
+         let i1, j1, i2, j2 =
+           (match sign1, sign2 with
+            | Pos, Neg -> i, j, inverse_index j, inverse_index i
+            | Neg, Pos -> j, i, inverse_index i, inverse_index j
+            | Pos, Pos -> i, inverse_index j, j, inverse_index i
+            | Neg, Neg -> inverse_index j, i, inverse_index i, j)
+         in
+         match oct with
+         | Matrix m -> set m i1 j1 c; set m i2 j2 c
+         | _ -> ())
+      | None, sign, v, ineq, Val c ->
+        (let i = v * 2 in
+          match oct with
+          | Matrix m ->
+            if (ineq == LEq) <> (sign == Pos)
+            then set m i (inverse_index i) c
+            else set m (inverse_index i) i c
+          (* match ineq with *)
+          (* | LEq -> *)
+          (* | GEq -> *)
+          | _ -> ())
       | _ -> ()
 
-  let set_equality oct i c var_count =
-    (match c with | Val c -> Printf.printf "setting value %f\n" c | _ -> ());
-    set_constraint oct (None, Pos, i, LEq, c) var_count;
-    set_constraint oct (None, Pos, i, GEq, c) var_count
+  let set_equality oct i (lower, upper) var_count =
+    set_constraint oct (None, Pos, i, LEq, upper) var_count;
+    set_constraint oct (None, Pos, i, GEq, lower) var_count
 
-
-
-
-  let get_constraints oct =
-    let elt_to_string lower = function
-      | Infinity -> "∞"
-      | Val elt -> string_of_float ((if lower then -1.0 else 1.0)  *. (elt /. 2.0))
-    in
-
-    let rec get_constraints i oct =
-      let oct_size = size oct in
-      if i < oct_size / 2 then
-        let lower = elt_to_string true (get_elt oct (2 * i) (2 * i + 1)) in
-        let upper = elt_to_string false (get_elt oct (2 * i + 1) (2 * i)) in
-        (Printf.sprintf "v%d ∈ [%s , %s]\n" i lower upper) ^ get_constraints (i + 1) oct
-      else
-        ""
-    in
-    get_constraints 0 oct
+  let projection oct i =
+    match oct with
+    | Top -> (Infinity, Infinity)
+    | Bot -> raise (Lattice.unsupported "constraint for variable unknown")
+    | Matrix oct ->
+      (let oct = strong_closure oct in
+       let oct_size = size oct in
+       if i < oct_size / 2 then
+         let lower = (get_elt oct (2 * i) (2 * i + 1)) in
+         let upper = (get_elt oct (2 * i + 1) (2 * i)) in
+         let fn v is_lower = match v with
+           | Infinity -> Infinity
+           | Val v -> Val ((if is_lower then -. 1.0 else 1.0) *. v /. 2.0)
+         in
+         (fn lower true, fn upper false)
+       else (Val 0.0, Val 0.0))
 end
 
 (*   let a = Test3.of_array *)

@@ -9,11 +9,10 @@ class variableVisitor (_: fundec)= object(self)
   method vvdec var =
     (match var.vtype with
      (* only add variables to the hashtable *)
-       (* TODO: make distinction more precise *)
-     | TInt _ | TFloat _ ->
+     | TInt _ ->
        Hashtbl.add variables var.vid (var.vname, Hashtbl.length variables)
      | _ -> ());
-      SkipChildren
+    SkipChildren
 end
 
 module Spec : Analyses.Spec =
@@ -22,29 +21,62 @@ struct
 
   let name = "term2"
   module D = ArrayOctagon
-  module C = D
+  module C = ArrayOctagon
   module G = Lattice.Unit
+
+  let negate_elt = function
+    | Infinity -> Infinity
+    | Val f -> Val (-. f)
+
+  let join_inv op (l1, u1) (l2, u2) =
+    let join_elts a b =
+      match a, b with
+      | Infinity, _ | _, Infinity -> Infinity
+      | Val a, Val b -> Val (op a b)
+    in
+    (join_elts l1 l2, join_elts u1 u2)
+
+  let add_inv a b = join_inv (+.) a b
+  let sub_inv a b = join_inv (-.) a b
+
+
+  let rec evaluate_exp oct = function
+    | Const (CInt64 (i, _, _)) -> (Val (Int64.to_float i), Val (Int64.to_float i))
+    | Const (CReal (f, _, _)) -> (Val f, Val f)
+    | Lval (Var var, _) ->
+      if not (Hashtbl.mem variables var.vid) then
+        (Infinity, Infinity)
+      else
+        let _, index = Hashtbl.find variables var.vid in
+        D.projection oct index
+    | UnOp (Neg, exp, _) ->
+      let (lower, upper) = evaluate_exp oct exp in
+      (negate_elt upper, negate_elt lower)
+    | BinOp (op, expl, expr, _) ->
+      (let a, b = evaluate_exp oct expl, evaluate_exp oct expr in
+       match op with
+       | PlusA -> add_inv a b
+       | MinusA -> sub_inv a b
+       | _ -> (Infinity, Infinity))
+    | _ -> (Infinity, Infinity)
+
 
   (* transfer functions *)
   let assign ctx (lval:lval) (rval:exp) : D.t =
     let host, _ = lval in
     (match host with
-    | Var info ->
-      (if not (Hashtbl.mem variables info.vid) then ()
-      else
-        let _, index = Hashtbl.find variables info.vid in
-        Printf.printf "setting variable %s\n" info.vname;
-        match rval with
-        | Const (CInt64 (i, _, _)) -> D.set_equality ctx.local index (D.elt_of_float (Int64.to_float i)) (Hashtbl.length variables)
-        | Const (CReal (f, _, _)) -> D.set_equality ctx.local index (D.elt_of_float f) (Hashtbl.length variables)
-        | _ -> ()
-     )
-    | Mem _ -> ());
+     | Var info ->
+       (if not (Hashtbl.mem variables info.vid) then ()
+        else
+          let _, index = Hashtbl.find variables info.vid in
+          let inv = evaluate_exp ctx.local rval in
+          D.set_equality ctx.local index inv (Hashtbl.length variables)
+       )
+     | Mem _ -> ());
     ctx.local
 
   let branch ctx (exp:exp) (tv:bool) : D.t =
     let doc = Cilfacade.p_expr exp in
-    print_endline "XXX";
     Prelude.Ana.fprint Pervasives.stdout 80 doc;
     ctx.local
 
