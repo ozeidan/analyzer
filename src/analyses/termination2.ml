@@ -10,6 +10,7 @@ class variableVisitor (_: fundec)= object(self)
     (match var.vtype with
      (* only add variables to the hashtable *)
      | TInt _ ->
+       (* print_endline (Printf.sprintf "storing variable %s" var.vname); *)
        Hashtbl.add variables var.vid (var.vname, Hashtbl.length variables)
      | _ -> ());
     SkipChildren
@@ -39,6 +40,10 @@ struct
   let add_inv a b = join_inv (+.) a b
   let sub_inv a b = join_inv (-.) a b
 
+  let const_to_float = function
+    | CInt64 (i, _, _) -> Some (Int64.to_float i)
+    | CReal (f, _, _) -> Some f
+    | _ -> None
 
   let rec evaluate_exp oct = function
     | Const (CInt64 (i, _, _)) -> (Val (Int64.to_float i), Val (Int64.to_float i))
@@ -63,22 +68,70 @@ struct
 
   (* transfer functions *)
   let assign ctx (lval:lval) (rval:exp) : D.t =
+    (* print_endline (D.to_string_matrix ctx.local); *)
+    let var_amount = Hashtbl.length variables in
     let host, _ = lval in
     (match host with
      | Var info ->
-       (if not (Hashtbl.mem variables info.vid) then ()
+       (if not (Hashtbl.mem variables info.vid) then ctx.local
         else
           let _, index = Hashtbl.find variables info.vid in
-          let inv = evaluate_exp ctx.local rval in
-          D.set_equality ctx.local index inv (Hashtbl.length variables)
+          match rval with
+          | BinOp (op, (Lval(Var v, _)), Const c, _)
+          | BinOp (op, Const c, (Lval(Var v, _)), _) ->
+            (match const_to_float c with
+             | None -> ctx.local
+             | Some c ->
+               (let c = match op with
+                   (* TODO hack for making PM exhaustive *)
+                   | PlusA -> c
+                   | MinusA -> -. c
+                   | _ -> c in
+                if v.vid = info.vid then
+                  D.adjust_variable ctx.local (Hashtbl.length variables) index c
+                else if not (Hashtbl.mem variables v.vid) then ctx.local
+                else
+                  let _, right_index = Hashtbl.find variables v.vid in
+                  D.adjust_variables ctx.local (Hashtbl.length variables) index right_index c))
+          | Lval (Var v, _) ->
+            if v.vid <> info.vid then
+              let _, index2 = Hashtbl.find variables v.vid in
+              let temp = D.set_constraint ctx.local (Some (Pos, index2), Pos, index, Leq, (Val 0.0)) var_amount in
+              D.set_constraint temp (Some (Neg, index2), Neg, index, Leq, (Val 0.0)) var_amount
+            else ctx.local
+          | exp ->
+            (* print_endline "evaluating expr"; *)
+            (* let doc = Cilfacade.p_expr rval in *)
+            (* Prelude.Ana.fprint Pervasives.stdout 80 doc; *)
+            let (lower, upper) = evaluate_exp ctx.local exp in
+            (* print_endline (Printf.sprintf "to boundaries [%s, %s]" (elt_to_string lower) (elt_to_string upper)); *)
+            D.set_var_bounds ctx.local index (lower, upper) (Hashtbl.length variables)
        )
-     | Mem _ -> ());
-    ctx.local
+     | Mem _ -> ctx.local)
 
   let branch ctx (exp:exp) (tv:bool) : D.t =
-    let doc = Cilfacade.p_expr exp in
-    Prelude.Ana.fprint Pervasives.stdout 80 doc;
-    ctx.local
+    (* print_endline (D.to_string_matrix ctx.local); *)
+    (* print_endline "branch with expression"; *)
+    (* let doc = Cilfacade.p_expr exp in *)
+    (* Prelude.Ana.fprint Pervasives.stdout 80 doc; *)
+    match exp with
+    | BinOp (binop, Lval (Var v, _), Const (CInt64 (i, _, _)), _) ->
+      if not (Hashtbl.mem variables v.vid) then ctx.local
+      else let i = match binop with
+          | Lt -> Int64.sub i Int64.one
+          | Gt -> Int64.add i Int64.one
+          | _ -> i
+        in
+        let ineq = match binop with
+          | Lt | Le -> Leq
+          | Gt | Ge -> Geq
+          | _ -> Leq (* TODO *)
+        in
+        let (_, index) = Hashtbl.find variables v.vid in
+        D.set_constraint ctx.local
+          (None, Pos, index, ineq, Val (Int64.to_float i))
+          (Hashtbl.length variables)
+    | _ -> ctx.local
 
   let body ctx (f:fundec) : D.t =
     ctx.local
@@ -102,8 +155,8 @@ struct
     ctx.local
 
   let startstate v = D.top ()
-  let otherstate v = D.bot ()
-  let exitstate  v = D.bot ()
+  let otherstate v = D.top ()
+  let exitstate  v = D.top ()
 end
 
 let _ =
