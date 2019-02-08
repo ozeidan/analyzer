@@ -15,6 +15,7 @@ class variableVisitor (_: fundec)= object(self)
      | _ -> ());
     SkipChildren
 end
+let size = ref 0
 
 module Spec : Analyses.Spec =
 struct
@@ -24,6 +25,8 @@ struct
   module D = ArrayOctagon
   module C = ArrayOctagon
   module G = Lattice.Unit
+
+  let init () = size := Hashtbl.length variables
 
   let negate_elt = function
     | Infinity -> Infinity
@@ -100,9 +103,8 @@ struct
               D.set_constraint temp (Some (Neg, index2), Neg, index, Leq, (Val 0.0)) var_amount
             else ctx.local
           | exp ->
-            (* print_endline "evaluating expr"; *)
-            (* let doc = Cilfacade.p_expr rval in *)
-            (* Prelude.Ana.fprint Pervasives.stdout 80 doc; *)
+            print_endline "evaluating expr";
+            if M.tracing then M.tracel "oct" "Exp: %a\n" d_plainexp rval;
             let (lower, upper) = evaluate_exp ctx.local exp in
             (* print_endline (Printf.sprintf "to boundaries [%s, %s]" (elt_to_string lower) (elt_to_string upper)); *)
             D.set_var_bounds ctx.local index (lower, upper) (Hashtbl.length variables)
@@ -158,6 +160,7 @@ struct
   let otherstate v = D.top ()
   let exitstate  v = D.top ()
 end
+
 
 let _ =
   Cilfacade.register_preprocess Spec.name (new variableVisitor);

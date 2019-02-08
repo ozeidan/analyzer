@@ -113,7 +113,7 @@ struct
     | _, Top -> -1
 
 
-  let name () = Printf.sprintf "Octagon Domain"
+  let name () = "Octagon Domain"
 
   let leq oct1 oct2 =
     (compare oct1 oct2) = -1
