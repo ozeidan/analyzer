@@ -128,7 +128,6 @@ module MapOctagon : S
   (*       | [] -> (first, None), [] *)
   (*     in find_consts None *)
   (*   in *)
-
   (*   mapi (fun i (i_inv, consts) -> *)
   (*       mapi (fun j (j_inv, _) (before, consts) -> *)
   (*           if (BV.compare i j) <> -1 *)
@@ -273,64 +272,72 @@ module MapOctagon : S
     | None -> None
     | Some i -> Some (Int64.neg i)
 
-  let matrix_get i j oct =
-    let rec matrix_get (i, i_inv) (j, j_inv) oct =
-      (* Printf.sprintf "Getting %B %s, %B %s" *)
-        (* i_inv (BV.short () i) j_inv (BV.short () j) *)
-      (* |> print_endline; *)
-      if i <> j
+  let print_inv = function
+    | None -> print_endline "None"
+    | Some i -> print_endline (INV.short 0 i)
+
+  (* let matrix_get i j oct = *)
+  let rec matrix_get (i, i_inv) (j, j_inv) oct =
+    (* Printf.sprintf "Getting %B %s, %B %s" *)
+    (* i_inv (BV.short () i) j_inv (BV.short () j) *)
+    (* |> print_endline; *)
+    let cmp = BV.compare i j in
+    if cmp <> 0
+    then
+      if cmp = 1
       then
-        if i < j
-        then
-          let sumConst, difConst = get_relation i j oct in
-          if not i_inv && not j_inv
-          then upper difConst
-          else if i_inv && not j_inv
-          then upper sumConst
-          else if not i_inv && j_inv
-          then OPT.map Int64.neg (lower sumConst)
-          else OPT.map Int64.neg (lower difConst)
-        else if (not i_inv && j_inv) || (i_inv && not j_inv)
-        then matrix_get (j, j_inv) (i, i_inv) oct
-        else OPT.map Int64.neg (matrix_get (j, j_inv) (i, i_inv) oct)
-      else
-        let const = get_interval i oct in
-        if not i_inv && j_inv
-        then OPT.map Int64.neg
-            (OPT.map (Int64.mul (Int64.of_int 2)) (lower const))
-        else if i_inv && not j_inv
-        then OPT.map (Int64.mul (Int64.of_int 2)) (lower const)
-        else Some (Int64.zero)
-    in matrix_get i j oct
-       |> OPT.map (min max_int)
-       |> OPT.map (max min_int)
+        let sumConst, difConst = get_relation j i oct in
+        match i_inv, j_inv with
+        | true, false -> upper sumConst
+        | false, true -> OPT.map Int64.neg (lower sumConst)
+        | false, false ->
+          (if (i.vname = "b" && j.vname = "a")
+           then
+             begin
+               print_endline "***";
+               print_inv difConst
+             end
+           else ());
+          upper difConst
+        | true, true -> OPT.map Int64.neg (lower difConst)
+      else if (not i_inv && j_inv) || (i_inv && not j_inv)
+      then matrix_get (j, j_inv) (i, i_inv) oct
+      else OPT.map Int64.neg (matrix_get (j, j_inv) (i, i_inv) oct)
+    else
+      let const = get_interval i oct in
+      match i_inv, j_inv with
+      | false, true -> OPT.map Int64.neg (OPT.map (Int64.mul (Int64.of_int 2)) (lower const))
+      | true, false -> OPT.map (Int64.mul (Int64.of_int 2)) (upper const)
+      | _ -> Some (Int64.zero)
+  (* in matrix_get i j oct *)
+  (*    |> OPT.map (min max_int) *)
+  (*    |> OPT.map (max min_int) *)
 
   let rec matrix_set (i, i_inv) (j, j_inv) value oct =
     let lower inv = INV.minimal inv |> OPT.get in
     let upper inv = INV.maximal inv |> OPT.get in
     (* Printf.sprintf "Setting %Ld at %B %s, %B %s" *)
-      (* value i_inv (BV.short () i) j_inv (BV.short () j) *)
+    (* value i_inv (BV.short () i) j_inv (BV.short () j) *)
     (* |> print_endline; *)
-    if i <> j
+    let cmp = BV.compare i j in
+    if cmp <> 0
     then
-      if i < j
+      if cmp = 1
       then
         let sumConst, difConst = get_relation i j oct in
         let sumConst = OPT.default (INV.top ()) sumConst in
         let difConst = OPT.default (INV.top ()) difConst in
-        if not i_inv && not j_inv
-        then
-          let inv = INV.of_interval (lower difConst, value) in
-          set_constraint (i, Some (false, j), inv) oct
-        else if i_inv && not j_inv
-        then
+        match i_inv, j_inv with
+        | true, false ->
           let inv = INV.of_interval (lower sumConst, value) in
           set_constraint (i, Some (true, j), inv) oct
-        else if not i_inv && j_inv
-        then
+        | false, true ->
           let inv = INV.of_interval (Int64.neg value, upper sumConst) in
           set_constraint (i, Some (true, j), inv) oct
-        else
+        | false, false ->
+          let inv = INV.of_interval (lower difConst, value) in
+          set_constraint (i, Some (false, j), inv) oct
+        | true, true ->
           let inv = INV.of_interval (Int64.neg value, upper difConst) in
           set_constraint (i, Some (false, j), inv) oct
       else if (not i_inv && j_inv) || (i_inv && not j_inv)
@@ -348,46 +355,31 @@ module MapOctagon : S
         set_constraint (i, None, inv) oct
       else Lattice.unsupported "error"
 
-  let strong_closure_s oct =
-    let rec unpack inv =
-      match inv with
-      | None -> unpack (Some (INV.top ()))
-      | Some inv ->
-        (match INV.minimal inv, INV.maximal inv with
-         | Some min, Some max -> min, max
-         | _ -> unpack (Some (INV.top ())))
-    in
+    (* let rec unpack inv = *)
+    (*   match inv with *)
+    (*   | None -> unpack (Some (INV.top ())) *)
+    (*   | Some inv -> *)
+    (*     (match INV.minimal inv, INV.maximal inv with *)
+    (*      | Some min, Some max -> min, max *)
+    (*      | _ -> unpack (Some (INV.top ()))) *)
+    (* in *)
 
-    fold (fun i ilist map ->
-        fold (fun j jlist map ->
-            if i >= j then map
-            else
-              let inv_i, constraints = ilist in
-              let inv_j, _ = jlist in
-              let (li, ui), (lj, uj) = unpack (Some inv_i),
-                                       unpack (Some inv_j) in
-              let (sumConstraint, subConstraint) =
-                MyList.find_constraints j constraints in
-              let pl, pu = unpack sumConstraint in
-              let nl, nu = unpack subConstraint in
-              let pl, pu = max pl (Int64.add li lj), min pu (Int64.add ui uj) in
-              let nl, nu = max nl (Int64.sub li uj), min nu (Int64.sub ui lj) in
-              let constraints = MyList.set_constraint (true, j, INV.of_interval (pl, pu)) constraints in
-              let constraints = MyList.set_constraint (false, j, INV.of_interval (nl, nu)) constraints in
-              add i (inv_i, constraints) map
-          ) map map
-      ) oct oct
 
+              (* let inv_i, constraints = ilist in let inv_j, _ = jlist in let (li, ui), (lj, uj) = unpack (Some inv_i), *)
+              (*                          unpack (Some inv_j) in *)
+              (* let (sumConstraint, subConstraint) = *)
+              (*   MyList.find_constraints j constraints in *)
+              (* let pl, pu = unpack sumConstraint in *)
+              (* let nl, nu = unpack subConstraint in *)
+              (* let pl, pu = max pl (Int64.add li lj), min pu (Int64.add ui uj) in *)
+              (* let nl, nu = max nl (Int64.sub li uj), min nu (Int64.sub ui lj) in *)
+              (* let constraints = MyList.set_constraint (true, j, INV.of_interval (pl, pu)) constraints in *)
+              (* let constraints = MyList.set_constraint (false, j, INV.of_interval (nl, nu)) constraints in *)
+              (* add i (inv_i, constraints) oct *)
 
   let strong_closure oct =
     let vars = fold (fun key _ keys -> key::keys) oct []
                |> List.rev
-    in
-
-    let signs = [(false, false);
-                 (true, false);
-                 (false, true);
-                 (true, true)]
     in
 
     let add a b =
@@ -403,6 +395,48 @@ module MapOctagon : S
       | _ -> None
     in
 
+    let signs = [(false, false);
+                 (true, false);
+                 (false, true);
+                 (true, true)]
+    in
+
+    let printf name var =
+      match var with
+      | Some x -> Printf.printf "%s = %Ld\n" name x
+      | None -> Printf.printf "%s = None\n" name
+    in
+
+    let strong_closure_s oct =
+      List.fold_left (fun oct i ->
+          List.fold_left (fun oct j ->
+              if BV.compare i j > 0 then
+                List.fold_left (fun oct (i_sign, j_sign) ->
+                    let old_val = matrix_get (i, i_sign) (j, j_sign) oct in
+                    let first = (matrix_get (i, i_sign) (i, i_sign <> true) oct) in
+                    let second = (matrix_get (j, j_sign <> true) (j, j_sign) oct) in
+                    let new_val = add first second in
+                    let new_val = OPT.map
+                        (fun x -> Int64.div x (Int64.of_int 2))
+                        new_val
+                    in
+                    printf "old_val" old_val;
+                    printf "new_val" new_val;
+                    let new_val = min old_val new_val in
+                    if new_val <> old_val
+                    then
+                      match new_val with
+                      | Some new_val ->
+                        matrix_set (i, i_sign) (j, j_sign) new_val oct
+                      | None -> oct
+                    else oct
+                  ) oct signs
+              else oct
+            ) oct vars
+        ) oct vars
+    in
+
+
     (* let matrix_get a b oct = *)
     (*   let ret = matrix_get a b oct in *)
     (*   Printf.sprintf "Returning %Ld" ret |> print_endline; *)
@@ -411,42 +445,53 @@ module MapOctagon : S
 
 
     List.fold_left (fun oct k ->
-        (* Printf.sprintf "k = %s" (BV.short 0 k) |> print_endline; *)
+        Printf.sprintf "k = %s" (BV.short 0 k) |> print_endline;
         let oct = List.fold_left (fun oct i ->
             List.fold_left (fun oct j ->
-                if BV.compare i j <> -1
+                if BV.compare i j <> 1
                 then oct
-                else List.fold_left (fun oct (i_sign, j_sign) ->
-                    (* Printf.sprintf "i = %s" (BV.short 0 i) |> print_endline; *)
-                    (* Printf.sprintf "j = %s" (BV.short 0 j) |> print_endline; *)
-                    let old = matrix_get (i, i_sign) (j, j_sign) oct in
-                    let a = add (matrix_get (i, i_sign) (k, false) oct)
-                        (matrix_get (k, false) (j, j_sign) oct) in
-                    (* Printf.printf "a = %Ld\n" a; *)
-                    let b = add (matrix_get (i, i_sign) (k, true) oct)
-                        (matrix_get (k, true) (j, j_sign) oct) in
-                    (* Printf.printf "b = %Ld\n" b; *)
-                    let c = add (matrix_get (i, i_sign) (k, false) oct)
-                        (add (matrix_get (k, false) (k, true) oct)
-                           (matrix_get (k, true) (j, j_sign) oct)) in
-                    (* Printf.printf "c = %Ld\n" c; *)
-                    let d = add (matrix_get (i, i_sign) (k, true) oct)
-                        (add (matrix_get (k, true) (k, false) oct)
-                           (matrix_get (k, false) (j, j_sign) oct)) in
-                    (* Printf.printf "d = %Ld\n" d; *)
-                    let new_val = List.fold_left min old [a; b; c; d] in
-                    if new_val <> old
-                    then
-                      match new_val with
-                      | Some new_val ->
-                        matrix_set (i, i_sign) (j, j_sign) new_val oct
-                      | None -> oct
-                    else oct
-                  ) oct signs
+                else
+                  let () = Printf.printf "i = %s\n" (BV.short 0 i) in
+                  let () = Printf.printf "j = %s\n" (BV.short 0 j) in
+                  List.fold_left (fun oct (i_sign, j_sign) ->
+                      let () = Printf.printf "i_sign = %B\n" i_sign in
+                      let () = Printf.printf "j_sign = %B\n" j_sign in
+                      let old = matrix_get (i, i_sign) (j, j_sign) oct in
+                      printf "old" old;
+                      let a = add (matrix_get (i, i_sign) (k, false) oct)
+                          (matrix_get (k, false) (j, j_sign) oct) in
+                      printf "a" a;
+                      let b = add (matrix_get (i, i_sign) (k, true) oct)
+                          (matrix_get (k, true) (j, j_sign) oct) in
+                      printf "b" b;
+                      let c = add (matrix_get (i, i_sign) (k, false) oct)
+                          (add (matrix_get (k, false) (k, true) oct)
+                             (matrix_get (k, true) (j, j_sign) oct)) in
+                      printf "c" c;
+                      let d = add (matrix_get (i, i_sign) (k, true) oct)
+                          (add (matrix_get (k, true) (k, false) oct)
+                             (matrix_get (k, false) (j, j_sign) oct)) in
+                      printf "d" d;
+                      let new_val = List.fold_left min old [a; b; c; d] in
+                      printf "new" new_val;
+                      if new_val <> old
+                      then begin
+                        let oct =
+                          match new_val with
+                          | Some new_val ->
+                            matrix_set (i, i_sign) (j, j_sign) new_val oct
+                          | None -> oct
+                        in print_oct oct; oct
+                      end
+                      else oct
+                    ) oct signs
               ) oct vars
           ) oct vars
         in
-        strong_closure_s oct
+        let () = print_endline "strong_closure_s begin #####" in
+        let oct = strong_closure_s oct in
+        let () = print_endline "strong_closure_s begin #####" in
+        oct
       ) oct vars
 end
 
