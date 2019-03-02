@@ -20,17 +20,17 @@ struct
       INV.neg (evaluate_exp oct exp)
     | BinOp (op, expl, expr, _) ->
       let operation = (match op with
-       | PlusA -> INV.add
-       | MinusA -> INV.sub
-       | Mult -> INV.mul
-       | Div -> INV.div
-       | Lt -> INV.lt
-       | Gt -> INV.gt
-       | Le -> INV.le
-       | Ge -> INV.ge
-       | Eq -> INV.eq
-       | Ne -> INV.ne
-       | _ -> (fun a _ -> a))
+          | PlusA -> INV.add
+          | MinusA -> INV.sub
+          | Mult -> INV.mul
+          | Div -> INV.div
+          | Lt -> INV.lt
+          | Gt -> INV.gt
+          | Le -> INV.le
+          | Ge -> INV.ge
+          | Eq -> INV.eq
+          | Ne -> INV.ne
+          | _ -> fun _ _ -> INV.top ())
       in
       operation (evaluate_exp oct expl) (evaluate_exp oct expr)
     | _ -> INV.top ()
@@ -49,29 +49,24 @@ struct
          print_endline "after";
 
          (match rval with
-          | Const(CInt64 (integer, _, _)) ->
-            print_endline ("erasing " ^ lval.vname);
-            MapOctagon.print_oct ctx.local |> print_endline;
+          | BinOp(PlusA, Lval(Var(var), _), Const(CInt64 (integer, _, _)), _) ->
+            if (BV.compare lval var) = 0
+            then MapOctagon.adjust var integer ctx.local
+            else
+              let oct = MapOctagon.erase lval ctx.local in
+              MapOctagon.set_constraint (lval, Some(false, var), true, integer)
+                (MapOctagon.set_constraint (lval, Some(false, var), false, integer) oct)
+          | exp ->
             let oct = MapOctagon.erase lval ctx.local in
-            MapOctagon.print_oct oct |> print_endline;
-            print_endline "erased";
-            MapOctagon.set_constraint true (lval, None, true, integer)
-              (MapOctagon.set_constraint true  (lval, None, false, integer) oct)
-          | Lval ((Var info), offset) ->
-            let const = MapOctagon.projection info ctx.local in
-            MapOctagon.set_constraint true (lval, None, true, INV.maximal const |> Option.get)
-              (MapOctagon.set_constraint true (lval, None, false, INV.minimal const |> Option.get)
-                 ctx.local)
-          | BinOp(PlusA, Lval(Var(var), _), Const(CInt64 (integer, _, _)), _)
-            when (BV.compare var lval) = 0 ->
-            MapOctagon.print_oct ctx.local |> print_endline;
-            let oct = MapOctagon.adjust var integer ctx.local
-            in oct
-          (* in MapOctagon.print_oct oct |> print_endline; oct *)
-          | _ -> ctx.local)
+            let const = evaluate_exp ctx.local exp in
+            if not (INV.is_top const) then
+              MapOctagon.set_constraint (lval, None, true, INV.maximal const |> Option.get)
+              (MapOctagon.set_constraint (lval, None, false, INV.minimal const |> Option.get)
+              oct)
+            else ctx.local
+         )
        | Mem _ -> ctx.local)
     in
-    (* in MapOctagon.strong_closure oct *)
     let oct = MapOctagon.strong_closure oct in
     MapOctagon.print_oct oct |> print_endline; oct
 
@@ -82,12 +77,18 @@ struct
     Printf.printf "tv = %B\n" tv;
     print_endline ("evaluates to " ^ (INV.short 0 (evaluate_exp ctx.local exp)));
 
+    let eval = (evaluate_exp ctx.local exp) in
+    let skip =
+      if INV.is_bool eval
+      then begin
+        let eval_bool = INV.to_bool eval |> BatOption.get in
+        eval_bool <> tv
+      end
+      else false
+    in
+
     (* TODO: should return bot *)
-    if begin
-      match INV.to_bool (evaluate_exp ctx.local exp) with
-      | Some false -> true
-      | _ -> false
-    end
+    if skip
     then ctx.local
     else begin
       print_endline "before";
@@ -112,29 +113,28 @@ struct
       let exp = normalize exp in
       let exp = if tv then exp else negate exp in
 
-      (* let () = Printf.printf "tv = %B\n" tv in *)
-      (* let doc = Cilfacade.p_expr exp in *)
-      (* Prelude.Ana.fprint Pervasives.stdout 80 doc; *)
-
       let oct = (match exp with
           | BinOp(cmp, lexp, Const(CInt64 (integer, _, _)), _)
             when cmp = Ge || cmp = Le ->
             (let upper = (cmp = Le) in
-             let oct = match lexp with
-               | BinOp(op, Lval(Var v1, _), Lval(Var v2, _), _) when op = PlusA || op = MinusA ->
-                 let sign = (op = PlusA) in
-                 MapOctagon.set_constraint false (v1, Some (sign, v2), upper, integer) ctx.local
-               | Lval(Var v, _) ->
-                 MapOctagon.set_constraint false (v, None, upper, integer) ctx.local
-               | _ -> ctx.local
-             in MapOctagon.meet oct ctx.local)
-          | BinOp(Eq, BinOp(op, Lval(Var v1, _), Lval(Var v2, _), _), Const(CInt64 (integer, _, _)), _)
+             match lexp with
+             | BinOp(op, Lval(Var v1, _), Lval(Var v2, _), _) when op = PlusA || op = MinusA ->
+               let sign = (op = PlusA) in
+               MapOctagon.set_constraint (v1, Some (sign, v2), upper, integer) ctx.local
+             | Lval(Var v, _) ->
+               MapOctagon.set_constraint (v, None, upper, integer) ctx.local
+             | _ -> ctx.local)
+          | BinOp(Eq, BinOp(op, Lval(Var v1, _), Lval(Var v2, _), _),
+                  Const(CInt64 (integer, _, _)), _)
             when op = PlusA || op = MinusA ->
             let sign = (op = PlusA) in
-            MapOctagon.set_constraint false (v1, Some(sign, v2), true, integer)
-              (MapOctagon.set_constraint false (v1, Some(sign, v2), false, integer) ctx.local)
+            MapOctagon.set_constraint (v1, Some(sign, v2), true, integer)
+              (MapOctagon.set_constraint (v1, Some(sign, v2), false, integer) ctx.local)
           | _ -> ctx.local)
-      in MapOctagon.print_oct oct |> print_endline; MapOctagon.strong_closure oct
+      in
+      print_endline "before closure"; MapOctagon.print_oct oct |> print_endline;
+      let oct = MapOctagon.meet oct ctx.local |> MapOctagon.strong_closure
+      in MapOctagon.print_oct oct |> print_endline; oct
     end
 
   let body ctx (f:fundec) : D.t =
