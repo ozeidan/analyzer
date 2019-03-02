@@ -2,6 +2,16 @@ module INV = IntDomain.Interval32
 module BV = Basetype.Variables
 module OPT = BatOption
 
+let cast varinfo inv =
+  let get_ikind varinfo =
+    match varinfo.Cil.vtype with
+    | Cil.TInt (ikind, _) -> Some ikind
+    | _ -> None
+  in
+  match get_ikind varinfo with
+  | Some ikind -> INV.cast_to ikind inv
+  | None -> inv
+
 module MyList =
 struct
   module P = Lattice.Prod3 (IntDomain.Booleans) (Lattice.Fake(BV)) (INV)
@@ -42,17 +52,26 @@ struct
     find_constraints None ls
 
 
-  let rec set_constraint (sign, v, (upper, value)) ls =
+  let rec set_constraint overwrite (sign, v, upper, value) ls =
+    (* List.iter (fun (sign, v, inv) -> *)
+    (*     print_string *)
+    (*       ((if sign then "+" else "-") ^ (v.Cil.vname) ^ INV.short 0 inv) *)
+    (*   )  ls; *)
+    (* print_newline (); *)
     let inv =
       if upper
       then INV.of_interval (min_int, value)
       else INV.of_interval (value, max_int)
     in
+    let inv = cast v inv in
     let delete = INV.is_top inv in
     let construct_inv old_inv =
-      if upper
-      then INV.of_interval (OPT.get (INV.minimal old_inv), value)
-      else INV.of_interval (value, OPT.get (INV.maximal old_inv))
+      let old_lower = INV.minimal old_inv |> OPT.get in
+      let old_upper = INV.maximal old_inv |> OPT.get in
+      (if upper
+       then INV.of_interval (old_lower, min old_upper value)
+       else INV.of_interval (max old_lower value, old_upper))
+      |> cast v
     in
     match ls with
     | x :: xs ->
@@ -70,13 +89,15 @@ struct
             (sign, v, inv) :: xs
         else if sign = true
         then if delete then ls else (sign, v, inv) :: ls
-        else if delete
-        then x :: (set_constraint (sign, v, (upper, value)) xs)
-        else x :: (sign, v, inv) :: xs
+        else
+          (* if delete *)
+          (* then *)
+          x :: (set_constraint overwrite (sign, v, upper, value) xs)
+          (* else x :: (sign, v, inv) :: xs *)
       end
       else if cmp = -1
       then if delete then ls else (sign, v, inv) :: ls
-      else x :: (set_constraint (sign, v, (upper, value)) xs)
+      else x :: (set_constraint overwrite (sign, v, upper, value) xs)
     | [] -> [(sign, v, inv)]
 
   let rec delete_constraint (sign, v) ls =
@@ -148,9 +169,12 @@ sig
   include Lattice.S
   type key
   type value
-  val set_constraint  : key * (IntDomain.Booleans.t * key) option * (bool * int64) -> t -> t
+  val set_constraint  : bool -> key * (IntDomain.Booleans.t * key) option * bool * int64 -> t -> t
+  val adjust          : key -> int64 -> t -> t
+  val erase           : key -> t -> t
+  val projection      : key -> t -> INV.t
   val strong_closure  : t -> t
-  val print_oct       : t -> unit
+  val print_oct       : t -> string
 end
 
 module VD = Lattice.Prod (INV) (MyList)
@@ -256,43 +280,46 @@ module MapOctagon : S
   (*       let ld = min ld (min (add kjus kils) (add *)
   (*     ) *)
 
-  (* TODO: this doesn't work *)
-  let find =
-    try
-      find
-    with
-      Lattice.Unsupported _ -> raise Not_found
+
+
 
   let print_oct oct =
-    let doc = pretty () oct in
-    Prelude.Ana.fprint Pervasives.stdout 80 doc; print_newline ()
+    Prelude.Ana.sprint pretty oct
+
+  let find x oct =
+    try
+      find x oct
+    with Lattice.Unsupported _ ->
+      (* Printf.printf "can't find %s in octagon %s\n" *)
+      (*   x.vname (print_oct oct); *)
+      raise Not_found
 
   let rec get_relation i j oct =
     if j < i then get_relation j i oct
     else try
         let _, l = find i oct in
         MyList.find_constraints j l
-      with Lattice.Unsupported _ ->
+      with Not_found ->
         None, None
 
   let get_interval i oct  =
     try
       let (inv, _) = find i oct in
       Some inv
-    with Lattice.Unsupported _ ->
+    with Not_found ->
       None
 
   let print_inv = function
     | None -> print_endline "None"
     | Some i -> print_endline (INV.short 0 i)
 
-  let rec set_constraint const oct =
+  let rec set_constraint overwrite const oct =
     match const with
-    | var, None, (upper, value) ->
+    | var, None, upper, value ->
       let (old_inv, consts) =
         (try
            find var oct
-         with Lattice.Unsupported _ ->
+         with Not_found ->
            INV.top (), [])
       in
       let old_inv =
@@ -305,40 +332,84 @@ module MapOctagon : S
         if upper
         then INV.of_interval (OPT.get (INV.minimal old_inv), value)
         else INV.of_interval (value, OPT.get (INV.maximal old_inv))
-      in add var (new_inv, consts) oct
-    | var1, Some (sign, var2), (upper, value) ->
+      in
+      let new_inv = cast var new_inv in
+      add var (new_inv, consts) oct
+    | var1, Some (sign, var2), upper, value ->
       let cmp = (BV.compare var1 var2) in
       if cmp = 0
       then (Lattice.unsupported "wrong arguments")
       else if cmp = 1
       then
         if sign = true
-        then set_constraint (var2, Some (sign, var1), (upper, value)) oct
-        else set_constraint (var2, Some (sign, var1), (not upper, value)) oct
+        then set_constraint overwrite (var2, Some (sign, var1), upper, value) oct
+        else set_constraint overwrite (var2, Some (sign, var1), not upper, value) oct
       else begin
         let oct = try
             let _ = find var2 oct in
             oct
-          with Lattice.Unsupported _ ->
+          with Not_found ->
             add var2 (INV.top(), []) oct
         in
         try
           let (const, consts) = find var1 oct in
-          let consts = MyList.set_constraint
-              (sign, var2, (upper, value)) consts in
+          let consts = MyList.set_constraint overwrite
+              (sign, var2, upper, value) consts in
           add var1 (const, consts) oct
-        with Lattice.Unsupported _ ->
-          let inv =
+        with Not_found ->
+          let new_inv =
             if upper
             then INV.of_interval (min_int, value)
             else INV.of_interval (value, max_int)
           in
-          if INV.is_top inv
+          let new_inv = cast var1 new_inv in
+          if INV.is_top new_inv
           then
             add var1 (INV.top (), []) oct
           else
-            add var1 (INV.top (), [(sign, var2, inv)]) oct
+            add var1 (INV.top (), [(sign, var2, new_inv)]) oct
       end
+
+  let adjust var value oct =
+    let add_inv = INV.of_int value in
+    try
+      let const, consts = find var oct in
+      let const = INV.add add_inv const in
+      let consts = List.map
+          (fun (sign, var2, old_val) ->
+             sign, var2, (INV.add old_val add_inv)) consts in
+      let oct = add var (const, consts) oct in
+
+      map (fun (a, consts) ->
+          (a, List.map (fun (sign, var2, old_val) ->
+               if (BV.compare var var2) <> 0
+               then sign, var2, old_val
+               else if sign = true
+               then sign, var2, (INV.add old_val add_inv)
+               else sign, var2, (INV.sub old_val add_inv)
+               )
+              consts)
+        ) oct
+    with Not_found ->
+      oct
+
+  let erase var oct =
+    let oct = remove var oct in
+    map (fun (a, consts) ->
+        (a, List.fold_right (fun a b ->
+            let (_, var2, _) = a in
+            if (BV.compare var var2) = 0
+            then b
+            else a :: b
+           ) consts [])
+      ) oct
+
+  let projection var oct =
+    try
+      let (inv, _) = find var oct in
+      inv
+    with Not_found ->
+      INV.top ()
 
   let upper = function
     | None -> None
@@ -416,15 +487,19 @@ module MapOctagon : S
         (* ) in *)
         (* let sumConst = OPT.default (INV.top ()) sumConst in *)
         (* let difConst = OPT.default (INV.top ()) difConst in *)
-        match i_inv, j_inv with
-        | true, false ->
-          set_constraint (j, Some (true, i), (true, value)) oct
-        | false, true ->
-          set_constraint (j, Some (true, i), (false, Int64.neg value)) oct
-        | false, false ->
-          set_constraint (j, Some (false, i), (true, value)) oct
-        | true, true ->
-          set_constraint (j, Some (false, i), (false, Int64.neg value)) oct
+        (* let () = print_oct oct |> print_endline in *)
+        (* let () = Printf.printf "setting %Ld at %B %s, %B %s\n" value i_inv i.vname j_inv j.vname in *)
+        let oct = (match i_inv, j_inv with
+            | true, false ->
+              set_constraint true (j, Some (true, i), true, value) oct
+            | false, true ->
+              set_constraint true (j, Some (true, i), false, Int64.neg value) oct
+            | false, false ->
+              set_constraint true (j, Some (false, i), true, value) oct
+            | true, true ->
+              set_constraint true (j, Some (false, i), false, Int64.neg value) oct)
+        in
+        print_oct oct |> print_endline; oct
       else if i_inv <> j_inv
       then matrix_set (j, i_inv) (i, j_inv) value oct
       else matrix_set (j, not i_inv) (i, not j_inv) value oct
@@ -432,10 +507,10 @@ module MapOctagon : S
       (* let const = OPT.default (INV.top ()) (get_interval i oct) in *)
     if not i_inv && j_inv
     then
-      set_constraint (i, None, (false, Int64.neg(Int64.div value (Int64.of_int 2)))) oct
+      set_constraint true (i, None, false, Int64.neg(Int64.div value (Int64.of_int 2))) oct
     else if i_inv && not j_inv
     then
-      set_constraint (i, None, (true, Int64.div value (Int64.of_int 2))) oct
+      set_constraint true (i, None, true, Int64.div value (Int64.of_int 2)) oct
     else Lattice.unsupported "error"
 
   (* let rec unpack inv = *)
@@ -484,11 +559,11 @@ module MapOctagon : S
                  (true, true)]
     in
 
-    (* let printf name var = *)
-    (*   match var with *)
-    (*   | Some x -> Printf.printf "%s = %Ld\n" name x *)
-    (*   | None -> Printf.printf "%s = None\n" name *)
-    (* in *)
+(*     let printf name var = *)
+(*       match var with *)
+(*       | Some x -> Printf.printf "%s = %Ld\n" name x *)
+(*       | None -> Printf.printf "%s = None\n" name *)
+(*     in *)
 
     let strong_closure_s oct =
       List.fold_left (fun oct i ->
@@ -509,19 +584,16 @@ module MapOctagon : S
                             not ((OPT.get new_val)
                                  < max_int))
                     then
-                      (* let () = printf "old_val" old_val in *)
-                      (* let () = printf "new_val" new_val in *)
                       match new_val with
                       | Some new_val ->
+                        (* print_endline "strong_closure"; *)
                         (* print_oct oct; *)
                         (* printf "old" old_val; *)
                         (* printf "first" first; *)
                         (* printf "second" second; *)
                         (* Printf.printf "Setting value %Ld at %B %s %B %s\n%!" *)
                         (*   new_val i_sign i.vname j_sign j.vname; *)
-                        let oct = matrix_set (i, i_sign) (j, j_sign) new_val oct in
-                        oct
-                      (* print_oct oct; oct *)
+                        matrix_set (i, i_sign) (j, j_sign) new_val oct
                       | None -> oct
                     else oct
                   ) oct signs
@@ -540,12 +612,14 @@ module MapOctagon : S
         (* Printf.sprintf "k = %s" (BV.short 0 k) |> print_endline; *)
         let oct = List.fold_left (fun oct i ->
             List.fold_left (fun oct j ->
-                if BV.compare i j < 0
+                let cmp = BV.compare i j in
+                if cmp < 0
                 then oct
                 else
                   (* let () = Printf.printf "i = %s\n" (BV.short 0 i) in *)
                   (* let () = Printf.printf "j = %s\n" (BV.short 0 j) in *)
                   List.fold_left (fun oct (i_sign, j_sign) ->
+                      if cmp = 0 && i_sign = j_sign then oct else
                       (* let () = Printf.printf "i_sign = %B\n" i_sign in *)
                       (* let () = Printf.printf "j_sign = %B\n" j_sign in *)
                       let old_val = matrix_get (i, i_sign) (j, j_sign) oct in
@@ -570,7 +644,7 @@ module MapOctagon : S
                         let oct =
                           match new_val with
                           | Some new_val ->
-                            (* print_oct oct; *)
+                            (* (1* print_oct oct; *1) *)
                             (* printf "old" old_val; *)
                             (* printf "a" a; *)
                             (* printf "b" b; *)
@@ -588,41 +662,42 @@ module MapOctagon : S
               ) oct vars
           ) oct vars
         in
-        (* let () = print_endline "strong_closure_s begin #####" in *)
-        let oct = strong_closure_s oct in
-        (* let () = print_endline "strong_closure_s begin #####" in *)
-        oct
+        strong_closure_s oct
       ) oct vars
 end
 
-module PA = Prelude.Ana
+(* module PA = Prelude.Ana *)
 
-let () =
-  (* let min_int = INV.top () |> INV.minimal |> BatOption.get in *)
-  let oct = MapOctagon.top () in
-  (* let oct2 = MapOctagon.top () in *)
-  let typ = PA.TInt(PA.IInt, []) in
-  let a = PA.makeVarinfo false "a" typ in
-  let b = PA.makeVarinfo false "b" typ in
-  let c = PA.makeVarinfo false "c" typ in
-  let oct = MapOctagon.set_constraint
-      (a, None, (true, Int64.of_int 1)) oct in
-  let oct = MapOctagon.set_constraint
-      (b, None, (true, Int64.of_int 2)) oct in
-  let oct = MapOctagon.set_constraint
-      (a, Some (false, c), (true, Int64.of_int 3)) oct in
-  let oct = MapOctagon.set_constraint
-      (a, Some (false, c), (false, Int64.of_int ~-4)) oct in
-  MapOctagon.print_oct oct;
-  let oct = MapOctagon.strong_closure oct in
-  MapOctagon.print_oct oct
-(* let oct2 = MapOctagon.set_constraint *)
-(*     (b, None, (INV.of_interval (Int64.of_int ~-4, Int64.of_int 2))) oct2 in *)
-(* let oct = MapOctagon.strong_closure oct in *)
-(* let oct2 = MapOctagon.strong_closure oct2 in *)
-(* MapOctagon.print_oct oct; *)
-(* MapOctagon.print_oct oct2; *)
-(* let oct3 = MapOctagon.narrow oct oct2 in *)
-(* MapOctagon.print_oct oct3; *)
-(* let oct3 = MapOctagon.strong_closure oct3 in *)
-(* MapOctagon.print_oct oct3 *)
+(* let () = *)
+(*   (1* let min_int = INV.top () |> INV.minimal |> BatOption.get in *1) *)
+(*   let oct = MapOctagon.top () in *)
+(*   (1* let oct2 = MapOctagon.top () in *1) *)
+(*   let typ = PA.TInt(PA.IInt, []) in *)
+(*   let a = PA.makeVarinfo false "a" typ in *)
+(*   let b = PA.makeVarinfo false "b" typ in *)
+(*   (1* let c = PA.makeVarinfo false "c" typ in *1) *)
+(*   let oct = MapOctagon.set_constraint true (a, None, true, Int64.of_int 1) oct in *)
+(*   let oct = MapOctagon.set_constraint true (a, None, false, Int64.of_int 1) oct in *)
+(*   let oct = MapOctagon.set_constraint true (b, None, true, Int64.of_int 0) oct in *)
+(*   let oct = MapOctagon.set_constraint true (b, None, false, Int64.of_int 0) oct in *)
+(*   (1* let oct = MapOctagon.set_constraint *1) *)
+(*   (1*     (a, Some (false, c), (true, Int64.of_int 3)) oct in *1) *)
+(*   (1* let oct = MapOctagon.set_constraint *1) *)
+(*   (1*     (a, Some (false, c), (false, Int64.of_int ~-4)) oct in *1) *)
+(*   (1* let oct = MapOctagon.set_constraint *1) *)
+(*   (1*     (b, None, (false, Int64.of_int ~-4)) oct in *1) *)
+(*   MapOctagon.print_oct oct |> print_endline; *)
+(*   let oct = MapOctagon.strong_closure oct in *)
+(*   MapOctagon.print_oct oct |> print_endline *)
+(*   (1* let oct = MapOctagon.strong_closure oct in *1) *)
+(*   (1* MapOctagon.print_oct oct *1) *)
+(* (1* let oct2 = MapOctagon.set_constraint *1) *)
+(* (1*     (b, None, (INV.of_interval (Int64.of_int ~-4, Int64.of_int 2))) oct2 in *1) *)
+(* (1* let oct = MapOctagon.strong_closure oct in *1) *)
+(* (1* let oct2 = MapOctagon.strong_closure oct2 in *1) *)
+(* (1* MapOctagon.print_oct oct; *1) *)
+(* (1* MapOctagon.print_oct oct2; *1) *)
+(* (1* let oct3 = MapOctagon.narrow oct oct2 in *1) *)
+(* (1* MapOctagon.print_oct oct3; *1) *)
+(* (1* let oct3 = MapOctagon.strong_closure oct3 in *1) *)
+(* (1* MapOctagon.print_oct oct3 *1) *)
