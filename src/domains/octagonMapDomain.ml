@@ -53,11 +53,6 @@ struct
 
 
   let rec set_constraint (sign, v, upper, value) ls =
-    (* List.iter (fun (sign, v, inv) -> *)
-    (*     print_string *)
-    (*       ((if sign then "+" else "-") ^ (v.Cil.vname) ^ INV.short 0 inv) *)
-    (*   )  ls; *)
-    (* print_newline (); *)
     let inv =
       if upper
       then INV.of_interval (min_int, value)
@@ -141,8 +136,16 @@ struct
     | None, x | x, None ->
       if preserve then x else None
 
-  let meet = map2 (app P.meet true)
-  let join = map2 (app P.join false)
+  let strip_top elt =
+    match elt with
+    | None -> None
+    | Some (_, _, inv) ->
+      if INV.is_top inv
+      then None
+      else elt
+
+  let meet = map2 (fun a b -> ((app P.meet true a b) |> strip_top))
+  let join = map2 (fun a b -> ((app P.join false a b) |> strip_top))
   let widen = map2 (fun x y ->
       match x, y with
       | Some x, Some y -> Some(P.widen x y)
@@ -174,7 +177,6 @@ sig
   val erase           : key -> t -> t
   val projection      : key -> t -> INV.t
   val strong_closure  : t -> t
-  val print_oct       : t -> string
 end
 
 module VD = Lattice.Prod (INV) (MyList)
@@ -279,12 +281,6 @@ module MapOctagon : S
   (*       let ud = min ud (min (add kjud kiud) (add kjls kius)) in *)
   (*       let ld = min ld (min (add kjus kils) (add *)
   (*     ) *)
-
-
-
-
-  let print_oct oct =
-    Prelude.Ana.sprint pretty oct
 
   let find x oct =
     try
@@ -662,6 +658,38 @@ module MapOctagon : S
         in
         strong_closure_s oct
       ) oct vars
+
+
+  let meet a b = meet a b |> strong_closure
+  let join a b = join a b |> strong_closure
+end
+
+module MapOctagonBot : S
+  with type key = BV.t = struct
+  include Lattice.LiftBot (MapOctagon)
+
+  type key = MapOctagon.key
+  type value = MapOctagon.value
+
+  let ignore_bot f = function
+    | `Bot -> `Bot
+    | `Lifted x -> lift @@ f x
+
+  let set_constraint const =
+    ignore_bot (MapOctagon.set_constraint const)
+
+  let adjust key value =
+    ignore_bot (MapOctagon.adjust key value)
+
+  let erase key =
+    ignore_bot (MapOctagon.erase key)
+
+  let strong_closure =
+    ignore_bot MapOctagon.strong_closure
+
+  let projection key = function
+    | `Bot -> INV.top ()
+    | `Lifted x -> MapOctagon.projection key x
 end
 
 (* module PA = Prelude.Ana *)

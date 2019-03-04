@@ -9,13 +9,16 @@ struct
   include Analyses.DefaultSpec
 
   let name = "octagon"
-  module D = MapOctagon
-  module C = MapOctagon
+  module D = MapOctagonBot
+  module C = D
   module G = Lattice.Unit
+
+  let print_oct oct =
+    Prelude.Ana.sprint D.pretty oct
 
   let rec evaluate_exp oct = function
     | Const (CInt64 (i, _, _)) -> INV.of_int i
-    | Lval (Var var, _) -> MapOctagon.projection var oct
+    | Lval (Var var, _) -> D.projection var oct
     | UnOp (Neg, exp, _) ->
       INV.neg (evaluate_exp oct exp)
     | BinOp (op, expl, expr, _) ->
@@ -45,30 +48,30 @@ struct
          let _ = Cilfacade.p_expr rval in
 
          print_endline "before";
-         MapOctagon.print_oct ctx.local |> print_endline;
+         print_oct ctx.local |> print_endline;
          print_endline "after";
 
          (match rval with
           | BinOp(PlusA, Lval(Var(var), _), Const(CInt64 (integer, _, _)), _) ->
             if (BV.compare lval var) = 0
-            then MapOctagon.adjust var integer ctx.local
+            then D.adjust var integer ctx.local
             else
-              let oct = MapOctagon.erase lval ctx.local in
-              MapOctagon.set_constraint (lval, Some(false, var), true, integer)
-                (MapOctagon.set_constraint (lval, Some(false, var), false, integer) oct)
+              let oct = D.erase lval ctx.local in
+              D.set_constraint (lval, Some(false, var), true, integer)
+                (D.set_constraint (lval, Some(false, var), false, integer) oct)
           | exp ->
-            let oct = MapOctagon.erase lval ctx.local in
+            let oct = D.erase lval ctx.local in
             let const = evaluate_exp ctx.local exp in
             if not (INV.is_top const) then
-              MapOctagon.set_constraint (lval, None, true, INV.maximal const |> Option.get)
-              (MapOctagon.set_constraint (lval, None, false, INV.minimal const |> Option.get)
+              D.set_constraint (lval, None, true, INV.maximal const |> Option.get)
+              (D.set_constraint (lval, None, false, INV.minimal const |> Option.get)
               oct)
             else ctx.local
          )
        | Mem _ -> ctx.local)
     in
-    let oct = MapOctagon.strong_closure oct in
-    MapOctagon.print_oct oct |> print_endline; oct
+    let oct = D.strong_closure oct in
+    print_oct oct |> print_endline; oct
 
 
   let branch ctx (exp:exp) (tv:bool) : D.t =
@@ -89,10 +92,10 @@ struct
 
     (* TODO: should return bot *)
     if skip
-    then ctx.local
+    then D.bot ()
     else begin
       print_endline "before";
-      MapOctagon.print_oct ctx.local |> print_endline;
+      print_oct ctx.local |> print_endline;
       print_endline "after";
 
       let normalize = function
@@ -120,21 +123,21 @@ struct
              match lexp with
              | BinOp(op, Lval(Var v1, _), Lval(Var v2, _), _) when op = PlusA || op = MinusA ->
                let sign = (op = PlusA) in
-               MapOctagon.set_constraint (v1, Some (sign, v2), upper, integer) ctx.local
+               D.set_constraint (v1, Some (sign, v2), upper, integer) ctx.local
              | Lval(Var v, _) ->
-               MapOctagon.set_constraint (v, None, upper, integer) ctx.local
+               D.set_constraint (v, None, upper, integer) ctx.local
              | _ -> ctx.local)
           | BinOp(Eq, BinOp(op, Lval(Var v1, _), Lval(Var v2, _), _),
                   Const(CInt64 (integer, _, _)), _)
             when op = PlusA || op = MinusA ->
             let sign = (op = PlusA) in
-            MapOctagon.set_constraint (v1, Some(sign, v2), true, integer)
-              (MapOctagon.set_constraint (v1, Some(sign, v2), false, integer) ctx.local)
+            D.set_constraint (v1, Some(sign, v2), true, integer)
+              (D.set_constraint (v1, Some(sign, v2), false, integer) ctx.local)
           | _ -> ctx.local)
       in
-      print_endline "before closure"; MapOctagon.print_oct oct |> print_endline;
-      let oct = MapOctagon.meet oct ctx.local |> MapOctagon.strong_closure
-      in MapOctagon.print_oct oct |> print_endline; oct
+      print_endline "before closure"; print_oct oct |> print_endline;
+      let oct = D.meet oct ctx.local |> D.strong_closure
+      in print_oct oct |> print_endline; oct
     end
 
   let body ctx (f:fundec) : D.t =
