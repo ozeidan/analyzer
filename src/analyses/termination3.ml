@@ -1,6 +1,6 @@
-open OctagonMapDomain
-open Prelude.Ana
 open Analyses
+open Prelude.Ana
+open OctagonMapDomain
 module INV = IntDomain.Interval32
 module BV = Basetype.Variables
 
@@ -18,7 +18,7 @@ struct
 
   let rec evaluate_exp oct = function
     | Const (CInt64 (i, _, _)) -> INV.of_int i
-    | Lval (Var var, _) -> D.projection var oct
+    | Lval (Var var, _) -> D.projection var None oct
     | UnOp (Neg, exp, _) ->
       INV.neg (evaluate_exp oct exp)
     | BinOp (op, expl, expr, _) ->
@@ -59,13 +59,28 @@ struct
               let oct = D.erase lval ctx.local in
               D.set_constraint (lval, Some(false, var), true, integer)
                 (D.set_constraint (lval, Some(false, var), false, integer) oct)
+          | BinOp(op, BinOp(Mult, expl1, expl2, _),
+                  BinOp(Mult, expr1, expr2, _), _) ->
+            (let match_mults expl expr =
+               match expl, expr with
+               | Lval(Var(var), _), Const(CInt64 (c, _, _))
+               | Const(CInt64 (c, _, _)), Lval(Var(var), _) ->
+                 Some (c, var)
+               | _ -> None
+             in
+             match match_mults expl1 expl2,
+                   match_mults expr1 expr2 with
+             | None, _ | _, None -> ctx.local
+             | Some (c1, var1), Some(c2, var2) ->
+               ctx.local
+               )
           | exp ->
             let oct = D.erase lval ctx.local in
             let const = evaluate_exp ctx.local exp in
             if not (INV.is_top const) then
               D.set_constraint (lval, None, true, INV.maximal const |> Option.get)
-              (D.set_constraint (lval, None, false, INV.minimal const |> Option.get)
-              oct)
+                (D.set_constraint (lval, None, false, INV.minimal const |> Option.get)
+                   oct)
             else ctx.local
          )
        | Mem _ -> ctx.local)
@@ -90,7 +105,6 @@ struct
       else false
     in
 
-    (* TODO: should return bot *)
     if skip
     then D.bot ()
     else begin

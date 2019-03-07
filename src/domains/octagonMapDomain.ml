@@ -25,8 +25,8 @@ struct
     match x, y with
     | _, [] -> true
     | [], _ -> false
-    | (_, v1, int1) :: xs, (_, v2, int2) :: ys when (compare v1 v2) = 0 ->
-      INV.leq int1 int2 && leq xs ys
+    | (_, v1, inv1) :: xs, (_, v2, inv2) :: ys when (compare v1 v2) = 0 ->
+      INV.leq inv1 inv2 && leq xs ys
     | _ :: xs, y ->
       leq xs y
 
@@ -172,10 +172,10 @@ sig
   include Lattice.S
   type key
   type value
-  val set_constraint  : key * (IntDomain.Booleans.t * key) option * bool * int64 -> t -> t
+  val set_constraint  : key * (bool * key) option * bool * int64 -> t -> t
   val adjust          : key -> int64 -> t -> t
   val erase           : key -> t -> t
-  val projection      : key -> t -> INV.t
+  val projection      : key -> (bool * key) option -> t -> INV.t
   val strong_closure  : t -> t
 end
 
@@ -383,7 +383,7 @@ module MapOctagon : S
                else if sign = true
                then sign, var2, (INV.add old_val add_inv)
                else sign, var2, (INV.sub old_val add_inv)
-               )
+             )
               consts)
         ) oct
     with Not_found ->
@@ -393,19 +393,28 @@ module MapOctagon : S
     let oct = remove var oct in
     map (fun (a, consts) ->
         (a, List.fold_right (fun a b ->
-            let (_, var2, _) = a in
-            if (BV.compare var var2) = 0
-            then b
-            else a :: b
+             let (_, var2, _) = a in
+             if (BV.compare var var2) = 0
+             then b
+             else a :: b
            ) consts [])
       ) oct
 
-  let projection var oct =
-    try
-      let (inv, _) = find var oct in
-      inv
-    with Not_found ->
-      INV.top ()
+  let projection var1 var2 oct =
+    match var2 with
+    | None ->
+      (try
+        let (inv, _) = find var1 oct in
+        inv
+      with Not_found ->
+        INV.top ())
+    | Some (sign, var2) ->
+        let (_, consts) = find var1 oct in
+        let first, second = MyList.find_constraints var2 consts in
+        let candidate = if sign then first else second in
+        match candidate with
+        | Some inv -> inv
+        | None -> INV.top ()
 
   let upper = function
     | None -> None
@@ -687,9 +696,9 @@ module MapOctagonBot : S
   let strong_closure =
     ignore_bot MapOctagon.strong_closure
 
-  let projection key = function
+  let projection key key2 = function
     | `Bot -> INV.top ()
-    | `Lifted x -> MapOctagon.projection key x
+    | `Lifted x -> MapOctagon.projection key key2 x
 end
 
 (* module PA = Prelude.Ana *)
