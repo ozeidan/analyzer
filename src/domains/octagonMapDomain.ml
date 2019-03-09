@@ -339,7 +339,7 @@ module MapOctagon : S
       then
         if sign = true
         then set_constraint (var2, Some (sign, var1), upper, value) oct
-        else set_constraint (var2, Some (sign, var1), not upper, value) oct
+        else set_constraint (var2, Some (sign, var1), not upper, Int64.neg value) oct
       else begin
         let oct = try
             let _ = find var2 oct in
@@ -400,7 +400,8 @@ module MapOctagon : S
            ) consts [])
       ) oct
 
-  let projection var1 var2 oct =
+  let rec projection var1 var2 oct =
+    (* TODO: swap var1 var2 if var1 > var2 *)
     match var2 with
     | None ->
       (try
@@ -409,12 +410,21 @@ module MapOctagon : S
       with Not_found ->
         INV.top ())
     | Some (sign, var2) ->
+      let cmp = (BV.compare var1 var2) in
+      if cmp = -1 then
         let (_, consts) = find var1 oct in
         let first, second = MyList.find_constraints var2 consts in
         let candidate = if sign then first else second in
         match candidate with
         | Some inv -> inv
         | None -> INV.top ()
+      else if cmp = 1 then
+        if sign = true then
+          projection var2 (Some (true, var1)) oct
+        else
+          INV.neg (projection var2 (Some (false, var1)) oct)
+      else
+        Lattice.unsupported "wrong arguments"
 
   let upper = function
     | None -> None
@@ -703,36 +713,40 @@ end
 
 (* module PA = Prelude.Ana *)
 
+(* let print_oct oct = *)
+(*   Prelude.Ana.sprint MapOctagon.pretty oct *)
 (* let () = *)
-(*   (1* let min_int = INV.top () |> INV.minimal |> BatOption.get in *1) *)
 (*   let oct = MapOctagon.top () in *)
 (*   (1* let oct2 = MapOctagon.top () in *1) *)
 (*   let typ = PA.TInt(PA.IInt, []) in *)
 (*   let a = PA.makeVarinfo false "a" typ in *)
 (*   let b = PA.makeVarinfo false "b" typ in *)
 (*   (1* let c = PA.makeVarinfo false "c" typ in *1) *)
-(*   let oct = MapOctagon.set_constraint (a, None, true, Int64.of_int 1) oct in *)
-(*   let oct = MapOctagon.set_constraint (a, None, false, Int64.of_int 1) oct in *)
-(*   let oct = MapOctagon.set_constraint (b, None, true, Int64.of_int 0) oct in *)
-(*   let oct = MapOctagon.set_constraint (b, None, false, Int64.of_int 0) oct in *)
-(*   (1* let oct = MapOctagon.set_constraint *1) *)
-(*   (1*     (a, Some (false, c), (true, Int64.of_int 3)) oct in *1) *)
-(*   (1* let oct = MapOctagon.set_constraint *1) *)
-(*   (1*     (a, Some (false, c), (false, Int64.of_int ~-4)) oct in *1) *)
-(*   (1* let oct = MapOctagon.set_constraint *1) *)
-(*   (1*     (b, None, (false, Int64.of_int ~-4)) oct in *1) *)
-(*   MapOctagon.print_oct oct |> print_endline; *)
-(*   let oct = MapOctagon.strong_closure oct in *)
-(*   MapOctagon.print_oct oct |> print_endline *)
-(*   (1* let oct = MapOctagon.strong_closure oct in *1) *)
-(*   (1* MapOctagon.print_oct oct *1) *)
-(* (1* let oct2 = MapOctagon.set_constraint *1) *)
-(* (1*     (b, None, (INV.of_interval (Int64.of_int ~-4, Int64.of_int 2))) oct2 in *1) *)
-(* (1* let oct = MapOctagon.strong_closure oct in *1) *)
-(* (1* let oct2 = MapOctagon.strong_closure oct2 in *1) *)
-(* (1* MapOctagon.print_oct oct; *1) *)
-(* (1* MapOctagon.print_oct oct2; *1) *)
-(* (1* let oct3 = MapOctagon.narrow oct oct2 in *1) *)
-(* (1* MapOctagon.print_oct oct3; *1) *)
-(* (1* let oct3 = MapOctagon.strong_closure oct3 in *1) *)
-(* (1* MapOctagon.print_oct oct3 *1) *)
+(*   let oct = MapOctagon.set_constraint (a, Some(false, b), true, Int64.of_int 4) oct in *)
+(*   let oct = MapOctagon.set_constraint (a, Some(false, b), false, Int64.of_int 2) oct in *)
+(*   print_oct oct |> print_endline; *)
+(*   MapOctagon.projection b (Some(false, a)) oct |> INV.short 0 |> print_endline *)
+(* (1* let oct = MapOctagon.set_constraint (a, None, false, Int64.of_int 1) oct in *1) *)
+(* (1*   let oct = MapOctagon.set_constraint (b, None, true, Int64.of_int 0) oct in *1) *)
+(* (1*   let oct = MapOctagon.set_constraint (b, None, false, Int64.of_int 0) oct in *1) *)
+(* (1*   (2* let oct = MapOctagon.set_constraint *2) *1) *)
+(* (1*   (2*     (a, Some (false, c), (true, Int64.of_int 3)) oct in *2) *1) *)
+(* (1*   (2* let oct = MapOctagon.set_constraint *2) *1) *)
+(* (1*   (2*     (a, Some (false, c), (false, Int64.of_int ~-4)) oct in *2) *1) *)
+(* (1*   (2* let oct = MapOctagon.set_constraint *2) *1) *)
+(* (1*   (2*     (b, None, (false, Int64.of_int ~-4)) oct in *2) *1) *)
+(* (1*   MapOctagon.print_oct oct |> print_endline; *1) *)
+(* (1*   let oct = MapOctagon.strong_closure oct in *1) *)
+(* (1*   MapOctagon.print_oct oct |> print_endline *1) *)
+(* (1*   (2* let oct = MapOctagon.strong_closure oct in *2) *1) *)
+(* (1*   (2* MapOctagon.print_oct oct *2) *1) *)
+(* (1* (2* let oct2 = MapOctagon.set_constraint *2) *1) *)
+(* (1* (2*     (b, None, (INV.of_interval (Int64.of_int ~-4, Int64.of_int 2))) oct2 in *2) *1) *)
+(* (1* (2* let oct = MapOctagon.strong_closure oct in *2) *1) *)
+(* (1* (2* let oct2 = MapOctagon.strong_closure oct in *2) *1) *)
+(* (1* (2* MapOctagon.print_oct oct; *2) *1) *)
+(* (1* (2* MapOctagon.print_oct oct2; *2) *1) *)
+(* (1* (2* let oct3 = MapOctagon.narrow oct oct2 in *2) *1) *)
+(* (1* (2* MapOctagon.print_oct oct3; *2) *1) *)
+(* (1* (2* let oct3 = MapOctagon.strong_closure oct3 in *2) *1) *)
+(* (1* (2* MapOctagon.print_oct oct3 *2) *1) *)
