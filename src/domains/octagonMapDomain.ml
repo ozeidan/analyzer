@@ -291,7 +291,10 @@ module MapOctagon : S
       raise Not_found
 
   let rec get_relation i j oct =
-    if j < i then get_relation j i oct
+    if BV.compare i j = 1 then
+      begin
+        print_endline "swap"; get_relation j i oct
+      end
     else try
         let _, l = find i oct in
         MyList.find_constraints j l
