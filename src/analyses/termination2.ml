@@ -71,80 +71,88 @@ struct
 
   (* transfer functions *)
   let assign ctx (lval:lval) (rval:exp) : D.t =
-    (* print_endline (D.to_string_matrix ctx.local); *)
+    (* print_oct ctx.local |> print_endline; *)
+    (* print_endline "after"; *)
     let var_amount = Hashtbl.length variables in
     let host, _ = lval in
     (match host with
      | Var info ->
+       print_string ("assigning " ^ info.vname ^ " = ");
+       let _ = Cilfacade.p_expr rval in
+
+       print_endline "before";
+       print_endline (D.to_string_matrix ctx.local);
        (if not (Hashtbl.mem variables info.vid) then ctx.local
         else
           let _, index = Hashtbl.find variables info.vid in
-          match rval with
-          | BinOp (op, (Lval(Var v, _)), Const c, _)
-          | BinOp (op, Const c, (Lval(Var v, _)), _) ->
-            (match const_to_float c with
-             | None -> ctx.local
-             | Some c ->
-               (let c = match op with
-                   (* TODO hack for making PM exhaustive *)
-                   | PlusA -> c
-                   | MinusA -> -. c
-                   | _ -> c in
-                if v.vid = info.vid then
-                  D.adjust_variable ctx.local (Hashtbl.length variables) index c
-                else if not (Hashtbl.mem variables v.vid) then ctx.local
-                else
-                  let _, right_index = Hashtbl.find variables v.vid in
-                  D.adjust_variables ctx.local (Hashtbl.length variables) index right_index c))
-          | Lval (Var v, _) ->
-            if v.vid <> info.vid then
-              let _, index2 = Hashtbl.find variables v.vid in
-              let temp = D.set_constraint ctx.local (Some (Pos, index2), Pos, index, Leq, (Val 0.0)) var_amount in
-              D.set_constraint temp (Some (Neg, index2), Neg, index, Leq, (Val 0.0)) var_amount
-            else ctx.local
-          | exp ->
-            print_endline "evaluating expr";
-            if M.tracing then M.tracel "oct" "Exp: %a\n" d_plainexp rval;
-            let (lower, upper) = evaluate_exp ctx.local exp in
-            (* print_endline (Printf.sprintf "to boundaries [%s, %s]" (elt_to_string lower) (elt_to_string upper)); *)
-            D.set_var_bounds ctx.local index (lower, upper) (Hashtbl.length variables)
+          let oct =
+            begin match rval with
+              | BinOp (op, (Lval(Var v, _)), Const c, _)
+              | BinOp (op, Const c, (Lval(Var v, _)), _) ->
+                (match const_to_float c with
+                 | None -> ctx.local
+                 | Some c ->
+                   let c = if op = PlusA then c else -.c in
+                   if v.vid = info.vid then
+                     D.adjust_variable ctx.local (Hashtbl.length variables) index c
+                   else if not (Hashtbl.mem variables v.vid) then ctx.local
+                   else
+                     let _, right_index = Hashtbl.find variables v.vid in
+                     D.adjust_variables ctx.local (Hashtbl.length variables) index right_index c)
+              | Lval (Var v, _) ->
+                if v.vid <> info.vid then
+                  let _, index2 = Hashtbl.find variables v.vid in
+                  let temp = D.set_constraint ctx.local (Some (true, index2), true, index, Leq, (Val 0.0)) var_amount in
+                  D.set_constraint temp (Some (false, index2), false, index, Leq, (Val 0.0)) var_amount
+                else ctx.local
+              | exp ->
+                print_endline "evaluating expr";
+                if M.tracing then M.tracel "oct" "Exp: %a\n" d_plainexp rval;
+                let (lower, upper) = evaluate_exp ctx.local exp in
+                (* print_endline (Printf.sprintf "to boundaries [%s, %s]" (elt_to_string lower) (elt_to_string upper)); *)
+                D.set_var_bounds ctx.local index (lower, upper) (Hashtbl.length variables)
+            end
+          in
+          let oct = D.strong_closure oct in
+          let () = print_endline "after:" in
+          let () = print_endline (D.to_string_matrix oct) in
+          oct
        )
      | Mem _ -> ctx.local)
 
   let branch ctx (exp:exp) (tv:bool) : D.t =
-    (* print_endline (D.to_string_matrix ctx.local); *)
-    (* print_endline "branch with expression"; *)
-    (* let doc = Cilfacade.p_expr exp in *)
-    (* Prelude.Ana.fprint Pervasives.stdout 80 doc; *)
-    match exp with
-    | BinOp (binop, Lval (Var v, _), Const (CInt64 (i, _, _)), _) ->
-      if not (Hashtbl.mem variables v.vid) then ctx.local
-      else let i = match binop with
-          | Lt -> Int64.sub i Int64.one
-          | Gt -> Int64.add i Int64.one
-          | _ -> i
-        in
-        let ineq = match binop with
-          | Lt | Le -> Leq
-          | Gt | Ge -> Geq
-          | _ -> Leq (* TODO *)
-        in
-        let (_, index) = Hashtbl.find variables v.vid in
-        D.set_constraint ctx.local
-          (None, Pos, index, ineq, Val (Int64.to_float i))
-          (Hashtbl.length variables)
-    | _ -> ctx.local
+    print_endline "before";
+    D.to_string_matrix ctx.local |> print_endline;
+    print_string "guard with expression ";
+    let _ = Cilfacade.p_expr exp in
+    Printf.printf "tv = %B\n" tv;
+
+    let oct = begin
+      match exp with
+      | BinOp (binop, Lval (Var v, _), Const (CInt64 (i, _, _)), _) ->
+        if not (Hashtbl.mem variables v.vid) then ctx.local
+        else let i = match binop with
+            | Lt -> Int64.sub i Int64.one
+            | Gt -> Int64.add i Int64.one
+            | _ -> i
+          in
+          let ineq = match binop with
+            | Lt | Le -> Leq
+            | Gt | Ge -> Geq
+            | _ -> Leq (* TODO *)
+          in
+          let (_, index) = Hashtbl.find variables v.vid in
+          D.set_constraint ctx.local
+            (None, true, index, ineq, Val (Int64.to_float i))
+            (Hashtbl.length variables)
+      | _ -> ctx.local
+    end
+    in D.strong_closure oct
 
   let body ctx (f:fundec) : D.t =
     ctx.local
 
   let return ctx (exp:exp option) (f:fundec) : D.t =
-    (* (match exp with *)
-    (* | None -> () *)
-    (* | Some exp -> *)
-    (*   let doc = Cilfacade.p_expr exp in *)
-    (*   print_endline "XXX"; *)
-    (*   Prelude.Ana.fprint Pervasives.stdout 80 doc); *)
     ctx.local
 
   let enter ctx (lval: lval option) (f:varinfo) (args:exp list) : (D.t * D.t) list =
