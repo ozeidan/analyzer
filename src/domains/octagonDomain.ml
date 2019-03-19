@@ -3,9 +3,6 @@ module INV = IntDomain.Interval32
 type elt = | Val of float | Infinity
 [@@deriving yojson]
 
-type ineq =
-    Leq | Geq
-
 let elt_to_string elt =
   match elt with
   | Infinity -> "inf"
@@ -15,7 +12,7 @@ module type S =
 sig
   include Lattice.S
   val of_array : float array array -> t
-  val set_constraint : t -> (bool * int) option * bool * int * ineq * elt -> int -> t
+  val set_constraint : t -> (bool * int) option * bool * int * bool * elt -> int -> t
   val set_var_bounds : t -> int -> elt * elt -> int -> t
   val adjust_variable : t -> int -> int -> float -> t
   val adjust_variables : t -> int -> int -> int -> float -> t
@@ -23,6 +20,7 @@ sig
   val constraints : t -> string
   val to_string_matrix : t -> string
   val strong_closure : t -> t
+  val top_of_size : int -> t
 end
 (* with type elt = element *)
 
@@ -32,14 +30,11 @@ struct
   include Lattice.StdCousot
   include Printable.Blank
 
-
-  type t =
-    | Matrix of elt array array
-    | Top
-    | Bot [@@deriving to_yojson]
+  type t = elt array array
+  [@@deriving yojson]
 
   let of_array matrix =
-    Matrix (Array.map (fun arr -> Array.map (fun elt -> Val elt) arr) matrix)
+    Array.map (fun arr -> Array.map (fun elt -> Val elt) arr) matrix
 
   let size oct = (Array.length oct) / 2
 
@@ -87,18 +82,18 @@ struct
 
   (* simple matrix comparison *)
   let equal oct1 oct2 =
-    match oct1, oct2 with
-    | Matrix oct1, Matrix oct2 ->
+    (* match oct1, oct2 with *)
+    (* | Matrix oct1, Matrix oct2 -> *)
       (match oct_find2 (fun a b -> a != b) oct1 oct2 with
        | Some _ -> false
        | None -> true)
-    | _ , _ -> oct1 == oct2
+    (* | _ , _ -> oct1 == oct2 *)
 
   let hash oct = 2
 
   let compare oct1 oct2 =
-    match oct1, oct2 with
-    | Matrix oct1, Matrix oct2 ->
+    (* match oct1, oct2 with *)
+    (* | Matrix oct1, Matrix oct2 -> *)
       (* Todo: could be more efficient *)
       (match oct_find2 (fun a b -> a < b) oct1 oct2,
              oct_find2 (fun a b -> a > b) oct1 oct2 with
@@ -106,11 +101,11 @@ struct
       | Some _, Some _ -> 0
       | None, Some _ -> 1
       | Some _, None -> -1)
-    | Bot, Bot | Top, Top -> 0
-    | Bot, _ -> -1
-    | _, Bot -> 1
-    | Top, _ -> 1
-    | _, Top -> -1
+    (* | Bot, Bot | Top, Top -> 0 *)
+    (* | Bot, _ -> -1 *)
+    (* | _, Bot -> 1 *)
+    (* | Top, _ -> 1 *)
+    (* | _, Top -> -1 *)
 
 
   let name () = "Octagon Domain"
@@ -142,13 +137,26 @@ struct
 
   let strong_closure oct =
     (* S+ matrix of the octagon paper *)
+    (* let print_elt elt name = *)
+    (*   print_endline (name ^ " = " ^ (elt_to_string elt)) *)
+    (* in *)
+
     let s oct =
       Array.mapi (fun i inner ->
           Array.mapi (fun j elt ->
-              let first = Array.get inner (inverse_index i) in
+              let first = get_elt oct i (inverse_index i) in
               let second = get_elt oct (inverse_index j) j in
-              let secondval = match first, second with | Val f, Val s -> Val ((f +. s) /. 2.0)
-                                                       | _ -> Infinity in
+              (* print_elt first "first"; *)
+              (* print_elt second "second"; *)
+              (* print_elt elt "old"; *)
+              let secondval = match first, second with
+                | Val f, Val s -> Val ((f +. s) /. 2.0)
+                | _ -> Infinity in
+              (* let () = *)
+              (*   if smaller secondval elt *)
+              (*   then Printf.printf "setting %s at (%d, %d)\n" (elt_to_string secondval) i j *)
+              (*   else () *)
+              (* in *)
               min_elt [elt ; secondval]
             ) inner) oct
     in
@@ -158,23 +166,37 @@ struct
       Array.mapi (fun i inner ->
           Array.mapi (fun j elt ->
               if i == j then Val 0.0 else
-                min_elt
-                  [elt;
-                   (add (get_elt oct i k) (get_elt oct k j));
-                   (add (get_elt oct i (inverse_index k)) (get_elt oct (inverse_index k) j));
-                   (add (add (get_elt oct i k) (get_elt oct k (inverse_index k))) (get_elt oct (inverse_index k) j));
-                   (add (add (get_elt oct i (inverse_index k)) (get_elt oct (inverse_index k) k)) (get_elt oct k j))]
+                (* let () = Printf.printf "i = %d\n" i in *)
+                (* let () = Printf.printf "j = %d\n" j in *)
+                (* let () = Printf.printf "k = %d\n" k in *)
+                let a = (add (get_elt oct i k) (get_elt oct k j)) in
+                let b = (add (get_elt oct i (inverse_index k)) (get_elt oct (inverse_index k) j)) in
+                let c = (add (add (get_elt oct i k) (get_elt oct k (inverse_index k))) (get_elt oct (inverse_index k) j)) in
+                let d = (add (add (get_elt oct i (inverse_index k)) (get_elt oct (inverse_index k) k)) (get_elt oct k j)) in
+                (* print_elt a "a"; *)
+                (* print_elt b "b"; *)
+                (* print_elt c "c"; *)
+                (* print_elt d "d"; *)
+                let new_val = min_elt [elt; a; b; c; d] in
+                (* let () = (if smaller new_val elt *)
+                (* then Printf.printf "setting %s at (%d, %d)\n" (elt_to_string new_val) i j *)
+                (* else ()) in *)
+                new_val
             ) inner ) oct
     in
 
     let rec strong_closure' oct k =
       let oct_size = size oct in
       if k <= oct_size / 2 then
-        strong_closure' (s (c oct (2 * (k - 1)))) (k + 1)
+        strong_closure' (s (c oct (2 * k ))) (k + 1)
       else
         oct
     in
-    strong_closure' oct 1
+    strong_closure' oct 0
+
+  (* let strong_closure = function *)
+  (*   | Matrix m -> Matrix (strong_closure m) *)
+  (*   | b -> b *)
 
   let min a b =
     match a, b with
@@ -189,26 +211,29 @@ struct
     | Val a, Val b -> Val (max a b)
 
   let join oct1 oct2 =
-    match oct1, oct2 with
-    | Bot, other | other, Bot -> other
-    | Top, _ | _, Top -> Top
-    | Matrix oct1, Matrix oct2 ->
-      strong_closure (Matrix (oct_map2 max oct1 oct2))
+    (* match oct1, oct2 with *)
+    (* | Bot, other | other, Bot -> other *)
+    (* | Top, _ | _, Top -> Top *)
+    (* | Matrix oct1, Matrix oct2 -> *)
+      strong_closure (oct_map2 max oct1 oct2)
 
   let meet oct1 oct2 =
-    match oct1, oct2 with
-    | Bot, _ | _, Bot -> Bot
-    | Top, other | other, Top -> other
-    | Matrix oct1, Matrix oct2 -> Matrix (oct_map2 min oct1 oct2)
+    (* match oct1, oct2 with *)
+    (* | Bot, _ | _, Bot -> Bot *)
+    (* | Top, other | other, Top -> other *)
+    (* | Matrix oct1, Matrix oct2 -> Matrix *)
+    (oct_map2 min oct1 oct2)
 
   let widen oct1 oct2 =
-    match oct1, oct2 with
-    (* TODO: is this case correct? *)
-    | Bot, other | other, Bot -> other
-    | Top, _ | _, Top -> Top
-    | Matrix oct1, Matrix oct2 ->
+    (* match oct1, oct2 with *)
+    (* (1* TODO: is this case correct? *1) *)
+    (* | Bot, other | other, Bot -> other *)
+    (* | Top, _ | _, Top -> Top *)
+    (* | Matrix oct1, Matrix oct2 -> *)
       strong_closure
-      (Matrix (oct_map2 (fun a b -> if elt_leq b a then a else Infinity) oct1 oct2))
+      (oct_map2
+         (fun a b -> if elt_leq b a then a else Infinity)
+         oct1 oct2)
 
 (*   let narrow oct1 oct2 = *)
 (*     if size oct1 <> size oct 2 *)
@@ -222,59 +247,41 @@ struct
 (*         else *)
 (*   in *)
 
-  let bot () = Bot
-
-  let is_bot = function
-      Bot -> true
-    | _ -> false
-
-
-  let top () = Top
-
-  let is_top = function
-      Top -> true
-    | _ -> false
+  let bot () = Lattice.unsupported "geht nicht"
+  let is_bot _ = false
+  let top () = Lattice.unsupported "geht nicht"
+  let is_top oct =
+    not (Array.exists (Array.exists ((<>) Infinity)) oct)
 
   let print_octagon oct =
     Array.iter (fun a -> Array.iter (fun el -> (match el with
         | Infinity -> print_string "Inf"
         | Val el -> print_float el) ; print_string "\t") a; print_newline ()) oct
 
-
   let top_of_size size =
-    Array.init (size * 2)
-      (fun _ -> Array.init (size * 2)
-          (fun _ -> Infinity))
+    let size = size * 2 in
+    Array.make_matrix size size Infinity
 
-  let copy_oct = function
-    | Matrix oct -> Matrix (Array.copy oct)
-    | a -> a
+  let copy_oct oct =
+    Array.map Array.copy oct
+    (* function *)
+    (* | Matrix oct -> Matrix (Array.copy oct) *)
+    (* | a -> a *)
 
   let rec set_constraint oct const var_count =
     let oct = copy_oct oct in
-    let oct = match oct with
-      | Bot | Top -> Matrix (top_of_size var_count)
-      | other -> other
-    in
-
-    let set arr i j c =
-      let do_change =
-        (match Array.get (Array.get arr i) j with
-         | Infinity -> true
-         | Val old -> old > c)
-      in if do_change then
-        set_elt arr i j (Val c)
-      else () in
-
+    (* let oct = match oct with *)
+    (*   | Bot | Top -> Matrix (top_of_size var_count) *)
+    (*   | other -> other *)
+    (* in *)
     (match const with
-     (* sums are always leq *)
-     | Some (sign1, v1), sign2, v2, ineq, Val c ->
+     | Some (sign1, v1), sign2, v2, upper, Val c ->
        let sign1, sign2, c =
-         if ineq == Geq
+         if not upper
          then not sign1, not sign2, -.c
          else sign1, sign2, c
        in
-       (let i = v1 * 2 in
+       let i = v1 * 2 in
         let j = v2 * 2 in
         let i1, j1, i2, j2 =
           (match sign1, sign2 with
@@ -283,25 +290,26 @@ struct
            | false, false -> i, inverse_index j, j, inverse_index i
            | true, true -> inverse_index j, i, inverse_index i, j)
         in
-        match oct with
-        | Matrix m -> set m i1 j1 c; set m i2 j2 c
-        | _ -> ())
-     | None, sign, v, ineq, Val c ->
-       (let i = v * 2 in
-        match oct with
-        | Matrix m ->
-          let c = if ineq = Leq then c else -.c in
-          if (ineq = Leq) <> (sign = true)
-          then set m i (inverse_index i) (2.0 *. c)
-          else set m (inverse_index i) i (2.0 *. c)
-        | _ -> ())
+        (* match oct with *)
+        (* | Matrix m -> *)
+          set_elt oct i1 j1 (Val c); set_elt oct i2 j2 (Val c)
+        (* | _ -> ()) *)
+     | None, sign, v, upper, Val c ->
+       let i = v * 2 in
+       (* match oct with *)
+       (* | Matrix m -> *)
+       let c = if upper then c else -.c in
+       if upper <> sign
+       then set_elt oct i (inverse_index i) (Val (2.0 *. c))
+       else set_elt oct (inverse_index i) i (Val (2.0 *. c))
+     (* | _ -> ()) *)
      | _ -> ());
     oct
 
   let set_var_bounds oct i (lower, upper) var_count =
     (* TODO: don't copy twice *)
-    let oct = set_constraint oct (None, true, i, Leq, upper) var_count in
-    let oct = set_constraint oct (None, true, i, Geq, lower) var_count in
+    let oct = set_constraint oct (None, true, i, true, upper) var_count in
+    let oct = set_constraint oct (None, true, i, false, lower) var_count in
     let rec clear j oct =
       if j >= size oct then ()
       else if i = j then clear (j + 1) oct
@@ -313,27 +321,24 @@ struct
           set_elt oct (inverse_index i) (inverse_index j) Infinity
         in wipe i j; wipe j i; clear (j + 1) oct
     in
-    match oct with
-    | Matrix oct -> clear 0 oct; Matrix oct
-    | _ -> Bot (* never happens *)
+    (* match oct with *)
+    (* | Matrix oct -> *)
+      clear 0 oct; oct
+    (* | _ -> Bot (1* never happens *1) *)
 
   let projection oct i =
-    match oct with
-    | Top -> (Infinity, Infinity)
-    | Bot -> raise (Lattice.unsupported "constraint for variable unknown")
-    | Matrix oct ->
-      (if i < size oct then
-         let lower = (get_elt oct (2 * i) (2 * i + 1)) in
-         let upper = (get_elt oct (2 * i + 1) (2 * i)) in
-         let fn v is_lower = match v with
-           | Infinity -> Infinity
-           | Val v -> Val ((if is_lower then -. 1.0 else 1.0) *. v /. 2.0)
-         in
-         (fn lower true, fn upper false)
-       else (Val 0.0, Val 0.0))
+    if i < size oct then
+      let lower = (get_elt oct (2 * i) (2 * i + 1)) in
+      let upper = (get_elt oct (2 * i + 1) (2 * i)) in
+      let fn v is_lower = match v with
+        | Infinity -> Infinity
+        | Val v -> Val ((if is_lower then -. 1.0 else 1.0) *. v /. 2.0)
+      in
+      (fn lower true, fn upper false)
+    else (Val 0.0, Val 0.0)
 
   let adjust_variable oct vars k c =
-    let adjust oct = Matrix(oct_mapi (fun i j elt ->
+    oct_mapi (fun i j elt ->
         match get_elt oct i j with
         | Infinity -> Infinity
         | Val old ->
@@ -347,51 +352,41 @@ struct
              else 0)
           in
           Val (old +. (float_of_int factor) *. c)
-      )oct)
-    in
-
-    (match oct with
-     | Top ->
-       let oct = top_of_size vars in
-       adjust oct
-     | Matrix oct -> adjust oct
-     | Bot -> Bot)
+      ) oct
 
   let adjust_variables oct vars k l c =
-    let adjust oct = Matrix (oct_mapi (fun i j elt ->
+    oct_mapi (fun i j elt ->
         if (j = 2*k && i = 2*l) || (j = 2*l+1 && i = 2*k+1) then
           Val c
         else if (j = 2*l && i = 2*k) || (j = 2*k+1 && i = 2*l+1) then
           Val (-.c)
-        else Infinity) oct) in
-    match oct with
-    | Top ->
-      let oct = top_of_size vars in
-      adjust oct
-    | Matrix inner ->
-      adjust inner
-    | Bot -> Bot
+        else Infinity) oct
 
   let constraints oct =
-    match oct with
-    | Top -> "Top"
-    | Bot -> "Bot"
-    | Matrix m ->
       let rec to_string i =
-        if i >= size m then ""
+        if i >= size oct then ""
         else let (lower, upper) = projection oct i in
           Printf.sprintf "v%d ∈ [%s,%s]\n" i (elt_to_string lower)
             (elt_to_string upper) ^ to_string (i+1)
       in to_string 0
 
   let to_string_matrix oct =
-    match oct with
-    | Top -> "Top"
-    | Bot -> "Bot"
-    | Matrix m ->
       Array.fold_left
-        (fun s inner -> s ^ "[" ^ (Array.fold_left (fun s elt -> s ^ (elt_to_string elt) ^ " ") "" inner) ^ "]\n") "" m
+        (fun s inner -> s ^ "[" ^ (Array.fold_left (fun s elt -> s ^ (elt_to_string elt) ^ " ") "" inner) ^ "]\n") "" oct
 
   let isSimple _ = false
   let short _ x = "array octagon"
+
 end
+
+(* let () = *)
+(*   let oct = ArrayOctagon.top () in *)
+(*   let oct = ArrayOctagon.set_constraint oct (None, true, 0, true, Val 4.0) 2 in *)
+(*   let oct = ArrayOctagon.set_constraint oct (None, true, 0, false, Val 4.0) 2 in *)
+(*   let oct = ArrayOctagon.set_constraint oct (None, true, 1, true, Val 16.0) 2 in *)
+(*   let oct = ArrayOctagon.set_constraint oct (None, true, 1, false, Val (-.2.0)) 2 in *)
+(*   ArrayOctagon.to_string_matrix oct |> print_endline; *)
+(*   let oct = ArrayOctagon.strong_closure oct in *)
+(*   ArrayOctagon.to_string_matrix oct |> print_endline; *)
+(*   print_endline (ArrayOctagon.constraints oct) *)
+

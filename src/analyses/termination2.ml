@@ -76,48 +76,44 @@ struct
     let var_amount = Hashtbl.length variables in
     let host, _ = lval in
     (match host with
-     | Var info ->
-       print_string ("assigning " ^ info.vname ^ " = ");
+     | Var lval ->
+       print_string ("assigning " ^ lval.vname ^ " = ");
        let _ = Cilfacade.p_expr rval in
 
        print_endline "before";
        print_endline (D.to_string_matrix ctx.local);
-       (if not (Hashtbl.mem variables info.vid) then ctx.local
-        else
-          let _, index = Hashtbl.find variables info.vid in
-          let oct =
-            begin match rval with
-              | BinOp (op, (Lval(Var v, _)), Const c, _)
-              | BinOp (op, Const c, (Lval(Var v, _)), _) ->
-                (match const_to_float c with
-                 | None -> ctx.local
-                 | Some c ->
-                   let c = if op = PlusA then c else -.c in
-                   if v.vid = info.vid then
-                     D.adjust_variable ctx.local (Hashtbl.length variables) index c
-                   else if not (Hashtbl.mem variables v.vid) then ctx.local
-                   else
-                     let _, right_index = Hashtbl.find variables v.vid in
-                     D.adjust_variables ctx.local (Hashtbl.length variables) index right_index c)
-              | Lval (Var v, _) ->
-                if v.vid <> info.vid then
-                  let _, index2 = Hashtbl.find variables v.vid in
-                  let temp = D.set_constraint ctx.local (Some (true, index2), true, index, Leq, (Val 0.0)) var_amount in
-                  D.set_constraint temp (Some (false, index2), false, index, Leq, (Val 0.0)) var_amount
-                else ctx.local
-              | exp ->
-                print_endline "evaluating expr";
-                if M.tracing then M.tracel "oct" "Exp: %a\n" d_plainexp rval;
-                let (lower, upper) = evaluate_exp ctx.local exp in
-                (* print_endline (Printf.sprintf "to boundaries [%s, %s]" (elt_to_string lower) (elt_to_string upper)); *)
-                D.set_var_bounds ctx.local index (lower, upper) (Hashtbl.length variables)
-            end
-          in
-          let oct = D.strong_closure oct in
-          let () = print_endline "after:" in
-          let () = print_endline (D.to_string_matrix oct) in
-          oct
-       )
+       let oct =
+         (if not (Hashtbl.mem variables lval.vid) then ctx.local
+          else
+            let _, index = Hashtbl.find variables lval.vid in
+              begin match rval with
+                | BinOp (op, (Lval(Var v, _)), Const c, _)
+                | BinOp (op, Const c, (Lval(Var v, _)), _) ->
+                  (match const_to_float c with
+                   | None -> ctx.local
+                   | Some c ->
+                     let c = if op = PlusA then c else -.c in
+                     if v.vid = lval.vid then
+                       D.adjust_variable ctx.local (Hashtbl.length variables) index c
+                     else if not (Hashtbl.mem variables v.vid) then ctx.local
+                     else
+                       let _, right_index = Hashtbl.find variables v.vid in
+                       D.adjust_variables ctx.local (Hashtbl.length variables) index right_index c)
+                | Lval (Var v, _) ->
+                  if v.vid <> lval.vid then
+                    let _, index2 = Hashtbl.find variables v.vid in
+                    let temp = D.set_constraint ctx.local (Some (true, index2), true, index, true, (Val 0.0)) var_amount in
+                    D.set_constraint temp (Some (false, index2), false, index, true, (Val 0.0)) var_amount
+                  else ctx.local
+                | exp ->
+                  print_endline "evaluating expr";
+                  if M.tracing then M.tracel "oct" "Exp: %a\n" d_plainexp rval;
+                  let (lower, upper) = evaluate_exp ctx.local exp in
+                  (* print_endline (Printf.sprintf "to boundaries [%s, %s]" (elt_to_string lower) (elt_to_string upper)); *)
+                  D.set_var_bounds ctx.local index (lower, upper) (Hashtbl.length variables)
+              end
+         )
+       in oct
      | Mem _ -> ctx.local)
 
   let branch ctx (exp:exp) (tv:bool) : D.t =
@@ -137,9 +133,9 @@ struct
             | _ -> i
           in
           let ineq = match binop with
-            | Lt | Le -> Leq
-            | Gt | Ge -> Geq
-            | _ -> Leq (* TODO *)
+            | Lt | Le -> true
+            | Gt | Ge -> false
+            | _ -> true (* TODO *)
           in
           let (_, index) = Hashtbl.find variables v.vid in
           D.set_constraint ctx.local
@@ -164,9 +160,9 @@ struct
   let special ctx (lval: lval option) (f:varinfo) (arglist:exp list) : D.t =
     ctx.local
 
-  let startstate v = D.top ()
-  let otherstate v = D.top ()
-  let exitstate  v = D.top ()
+  let startstate v = D.top_of_size !size
+  let otherstate v = D.top_of_size !size
+  let exitstate  v = D.top_of_size !size
 end
 
 
