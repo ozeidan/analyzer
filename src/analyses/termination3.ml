@@ -115,7 +115,13 @@ struct
          print_endline "after";
 
          (match rval with
-          | BinOp(PlusA, Lval(Var(var), _), Const(CInt64 (integer, _, _)), _) ->
+          | BinOp(op, Lval(Var(var), _), Const(CInt64 (integer, _, _)), _)
+            when op = PlusA || op = MinusA ->
+            let integer =
+              if op = MinusA
+              then Int64.neg integer
+              else integer
+            in
             if (BV.compare lval var) = 0
             then D.adjust var integer ctx.local
             else
@@ -134,6 +140,8 @@ struct
          )
        | Mem _ -> ctx.local)
     in
+    print_endline "before closure";
+    print_oct oct |> print_endline;
     let oct = D.strong_closure oct in
     print_oct oct |> print_endline; oct
 

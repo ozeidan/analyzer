@@ -4,19 +4,17 @@ open Analyses
 
 
 let variables : (int, string * int) Hashtbl.t = Hashtbl.create 0
-class variableVisitor (_: fundec)= object(self)
+class variableVisitor (_: fundec) = object(self)
   inherit nopCilVisitor
   method vvdec var =
     (match var.vtype with
-     (* only add variables to the hashtable *)
      | TInt _ ->
-       (* print_endline (Printf.sprintf "storing variable %s" var.vname); *)
        Hashtbl.add variables var.vid (var.vname, Hashtbl.length variables)
      | _ -> ());
     SkipChildren
 end
-let size = ref 0
 
+let size = ref 0
 module Spec : Analyses.Spec =
 struct
   include Analyses.DefaultSpec
@@ -71,9 +69,6 @@ struct
 
   (* transfer functions *)
   let assign ctx (lval:lval) (rval:exp) : D.t =
-    (* print_oct ctx.local |> print_endline; *)
-    (* print_endline "after"; *)
-    let var_amount = Hashtbl.length variables in
     let host, _ = lval in
     (match host with
      | Var lval ->
@@ -88,40 +83,45 @@ struct
             let _, index = Hashtbl.find variables lval.vid in
               begin match rval with
                 | BinOp (op, (Lval(Var v, _)), Const c, _)
-                | BinOp (op, Const c, (Lval(Var v, _)), _) ->
+                | BinOp (op, Const c, (Lval(Var v, _)), _)
+                  when op = PlusA || op = MinusA ->
                   (match const_to_float c with
                    | None -> ctx.local
                    | Some c ->
                      let c = if op = PlusA then c else -.c in
                      if v.vid = lval.vid then
-                       D.adjust_variable ctx.local (Hashtbl.length variables) index c
+                       D.adjust_variable ctx.local index c
                      else if not (Hashtbl.mem variables v.vid) then ctx.local
                      else
                        let _, right_index = Hashtbl.find variables v.vid in
-                       D.adjust_variables ctx.local (Hashtbl.length variables) index right_index c)
+                       D.adjust_variables ctx.local index right_index c)
                 | Lval (Var v, _) ->
                   if v.vid <> lval.vid then
                     let _, index2 = Hashtbl.find variables v.vid in
-                    let temp = D.set_constraint ctx.local (Some (true, index2), true, index, true, (Val 0.0)) var_amount in
-                    D.set_constraint temp (Some (false, index2), false, index, true, (Val 0.0)) var_amount
+                    let temp = D.set_constraint ctx.local (Some (true, index2), true, index, true, (Val 0.0)) in
+                    D.set_constraint temp (Some (false, index2), false, index, true, (Val 0.0))
                   else ctx.local
                 | exp ->
                   print_endline "evaluating expr";
                   if M.tracing then M.tracel "oct" "Exp: %a\n" d_plainexp rval;
                   let (lower, upper) = evaluate_exp ctx.local exp in
-                  (* print_endline (Printf.sprintf "to boundaries [%s, %s]" (elt_to_string lower) (elt_to_string upper)); *)
-                  D.set_var_bounds ctx.local index (lower, upper) (Hashtbl.length variables)
+                  print_endline (Printf.sprintf "to boundaries [%s, %s]" (elt_to_string lower) (elt_to_string upper));
+                  D.set_var_bounds ctx.local index (lower, upper)
               end
          )
-       in oct
+       in
+       let oct = D.strong_closure oct in
+       print_endline "after";
+       print_endline (D.to_string_matrix oct);
+       D.copy_oct oct
      | Mem _ -> ctx.local)
 
   let branch ctx (exp:exp) (tv:bool) : D.t =
-    print_endline "before";
-    D.to_string_matrix ctx.local |> print_endline;
     print_string "guard with expression ";
     let _ = Cilfacade.p_expr exp in
     Printf.printf "tv = %B\n" tv;
+    print_endline "before";
+    D.to_string_matrix ctx.local |> print_endline;
 
     let oct = begin
       match exp with
@@ -138,12 +138,17 @@ struct
             | _ -> true (* TODO *)
           in
           let (_, index) = Hashtbl.find variables v.vid in
+          if tv then
           D.set_constraint ctx.local
             (None, true, index, ineq, Val (Int64.to_float i))
-            (Hashtbl.length variables)
+          else ctx.local
       | _ -> ctx.local
     end
-    in D.strong_closure oct
+    in
+    let oct = D.meet oct ctx.local |> D.strong_closure in
+    print_endline "after";
+    print_endline (D.to_string_matrix oct);
+    D.copy_oct oct
 
   let body ctx (f:fundec) : D.t =
     ctx.local
@@ -160,7 +165,7 @@ struct
   let special ctx (lval: lval option) (f:varinfo) (arglist:exp list) : D.t =
     ctx.local
 
-  let startstate v = D.top_of_size !size
+  let startstate v = D.top_of_size (Hashtbl.length variables)
   let otherstate v = D.top_of_size !size
   let exitstate  v = D.top_of_size !size
 end
